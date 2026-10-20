@@ -14,14 +14,14 @@
 1. 按 ⌘+空格，输入"终端"，回车。
 2. 粘贴下面这行，回车：
    ```bash
-   curl -fsSL https://agentv1.com/codex.sh | bash
+   curl -fsSL https://humanslive.ai/codex.sh | bash
    ```
 3. 屏幕上弹出"登录智谱"的窗口后，用手机微信扫码（新用户扫码即注册）。
 
 **Windows**（两种方式任选一种）
 - **一行命令**：在开始菜单搜索"PowerShell"并打开，粘贴下面这行，回车，然后扫码：
   ```powershell
-  irm https://agentv1.com/codex.ps1 | iex
+  irm https://humanslive.ai/codex.ps1 | iex
   ```
 - **双击下载器**：运行 `CodexSetup.exe`。它没有代码签名，第一次打开会弹出「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」，然后扫码。
 
@@ -66,14 +66,14 @@ Get [OpenAI Codex](https://developers.openai.com/codex/app) running for anyone i
 1. Press ⌘+Space, type "Terminal", press Return.
 2. Paste this line and press Return:
    ```bash
-   curl -fsSL https://agentv1.com/codex.sh | bash
+   curl -fsSL https://humanslive.ai/codex.sh | bash
    ```
 3. When the Zhipu login window appears, scan its QR code with WeChat on your phone (scanning also registers new users).
 
 **Windows** (either way works)
 - **One command**: search the Start menu for "PowerShell", open it, paste this line, press Enter, then scan:
   ```powershell
-  irm https://agentv1.com/codex.ps1 | iex
+  irm https://humanslive.ai/codex.ps1 | iex
   ```
 - **Double-click installer**: run `CodexSetup.exe`. It is not code-signed, so the first launch shows "Windows protected your PC"; click "More info" → "Run anyway", then scan.
 

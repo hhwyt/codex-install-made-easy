@@ -1,6 +1,6 @@
 #!/bin/bash
 # Codex 一键安装（Mac）：装好官方 Codex App，用微信扫码登录智谱后自动创建 API Key，接上智谱免费模型。
-# 用法：curl -fsSL https://agentv1.com/codex.sh | bash
+# 用法：curl -fsSL https://humanslive.ai/codex.sh | bash
 # 只做这几件事：下载并校验官方 Codex、打开智谱登录窗口、新建一个 API Key、写 ~/.codex 下的配置、打开 Codex。
 set -euo pipefail
 

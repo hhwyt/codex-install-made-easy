@@ -1,5 +1,5 @@
 // CodexSetup.exe：双击即可运行的 Windows 安装器。它只是一层外壳：用系统自带的 PowerShell
-// 下载并执行 https://agentv1.com/codex.ps1（和「一行命令」安装的是同一个脚本），所以脚本更新后 exe 不用重发。
+// 下载并执行 https://humanslive.ai/codex.ps1（和「一行命令」安装的是同一个脚本），所以脚本更新后 exe 不用重发。
 // 没有代码签名：首次运行会弹出「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
 // 编译：在 Windows 上运行同目录的 build.bat（用系统自带的 .NET Framework 编译器，不需要安装任何东西）。
 using System;
@@ -8,7 +8,7 @@ using System.Text;
 
 internal static class CodexSetup
 {
-    private const string ScriptUrl = "https://agentv1.com/codex.ps1";
+    private const string ScriptUrl = "https://humanslive.ai/codex.ps1";
 
     private static int Main()
     {

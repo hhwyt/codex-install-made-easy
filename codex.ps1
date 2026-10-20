@@ -1,5 +1,5 @@
 # Codex 一键安装（Windows）：装好官方 Codex App，用微信扫码登录智谱后自动创建 API Key，接上智谱免费模型。
-# 用法（PowerShell）：irm https://agentv1.com/codex.ps1 | iex
+# 用法（PowerShell）：irm https://humanslive.ai/codex.ps1 | iex
 # 只做这几件事：从微软商店安装官方 Codex、打开智谱登录窗口、新建一个 API Key、写 %USERPROFILE%\.codex 下的配置、打开 Codex。
 # 兼容 Windows 自带的 PowerShell 5.1；不需要管理员权限。
 
