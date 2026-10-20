@@ -124,7 +124,7 @@ function run() {
       const response = await fetch('/api/biz/v1/organization/' + organization + '/projects/' + project + '/api_keys', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json', Authorization: token, 'Bigmodel-Organization': organization, 'Bigmodel-Project': project },
-        body: JSON.stringify({ name: 'Codex-' + new Date().toISOString().slice(0, 10), keyType: 1, usageScene: 2 }),
+        body: JSON.stringify({ name: (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return 'Codex-' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); })(), keyType: 1, usageScene: 2 }),
       }).then(r => r.json());
       document.title = response.code === 200 && response.data ? 'KEY:' + response.data.apiKey + '.' + response.data.secretKey : 'ERROR:' + (response.msg || response.code);
     } catch (e) { document.title = 'ERROR:' + e.message; }
@@ -132,12 +132,17 @@ function run() {
 
   const deadline = Date.now() + 15 * 60 * 1000;
   let outcome = 'TIMEOUT';
+  let lastRefresh = Date.now();
   while (Date.now() < deadline) {
     pumpEvents(1.5);
     if (!window.isVisible) { outcome = 'CANCELLED'; break; }
     evaluate(READ_STATE);
     pumpEvents(0.5);
-    if (readTitle() !== 'STATE:ready') continue;
+    if (readTitle() !== 'STATE:ready') {
+      // 微信二维码几分钟就过期：没登录的话每 4 分钟自动刷新一次
+      if (Date.now() - lastRefresh > 4 * 60 * 1000) { webView.reload; lastRefresh = Date.now(); }
+      continue;
+    }
     evaluate(CREATE_KEY);
     for (let i = 0; i < 30 && !/^(KEY|ERROR):/.test(readTitle()); i++) pumpEvents(0.5);
     const title = readTitle();

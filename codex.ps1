@@ -101,7 +101,7 @@ $CreateKeyScript = @'
     const response = await fetch('/api/biz/v1/organization/' + organization + '/projects/' + project + '/api_keys', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json', Authorization: token, 'Bigmodel-Organization': organization, 'Bigmodel-Project': project },
-      body: JSON.stringify({ name: 'Codex-' + new Date().toISOString().slice(0, 10), keyType: 1, usageScene: 2 }),
+      body: JSON.stringify({ name: (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return 'Codex-' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); })(), keyType: 1, usageScene: 2 }),
     }).then(r => r.json());
     return response.code === 200 && response.data ? 'KEY:' + response.data.apiKey + '.' + response.data.secretKey : 'ERROR:' + (response.msg || response.code);
   } catch (e) { return 'ERROR:' + e.message; }
@@ -113,27 +113,48 @@ function Get-ZhipuKeyAutomatically {
   if (-not $edge) { return 'ERROR:没有找到 Edge' }
   $profileDir = Join-Path $WorkDir 'edge-profile'
   $edgeProcess = Start-Process -FilePath $edge -PassThru -ArgumentList @(
-    "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check',
+    "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
     "--app=$ZhipuLoginUrl", '--window-size=1100,800')
   try {
-    $pageSocketUrl = $null
-    for ($i = 0; $i -lt 60 -and -not $pageSocketUrl; $i++) {
-      Start-Sleep -Milliseconds 500
-      try {
-        $targets = Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/list" -TimeoutSec 2
-        $pageSocketUrl = ($targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*bigmodel.cn*' } | Select-Object -First 1).webSocketDebuggerUrl
-      } catch { }
+    # 页面刷新或跳转后调试连接会断，所以每次出错都重新找页面、重新连；只有窗口真的关了才算放弃
+    $connectToPage = {
+      for ($i = 0; $i -lt 20; $i++) {
+        try {
+          $targets = Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/list" -TimeoutSec 2
+          $url = ($targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*bigmodel.cn*' } | Select-Object -First 1).webSocketDebuggerUrl
+          if ($url) {
+            $newSocket = [Net.WebSockets.ClientWebSocket]::new()
+            $newSocket.ConnectAsync([Uri]$url, [Threading.CancellationToken]::None).Wait()
+            return $newSocket
+          }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+      }
+      return $null
     }
-    if (-not $pageSocketUrl) { return 'ERROR:登录窗口没有打开' }
-    $socket = [Net.WebSockets.ClientWebSocket]::new()
-    $socket.ConnectAsync([Uri]$pageSocketUrl, [Threading.CancellationToken]::None).Wait()
+    $socket = & $connectToPage
+    if (-not $socket) { return 'ERROR:登录窗口没有打开' }
     $nextId = 1
     $deadline = (Get-Date).AddMinutes(15)
+    $lastRefresh = Get-Date
     while ((Get-Date) -lt $deadline) {
       Start-Sleep -Seconds 2
-      if ($edgeProcess.HasExited -or $socket.State -ne 'Open') { return 'CANCELLED' }
-      try { $state = Invoke-PageScript $socket ([ref]$nextId) $ReadStateScript } catch { return 'CANCELLED' }
-      if ($state -ne 'ready') { continue }
+      # 调试端口没了，说明用户把登录窗口关了
+      try { Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/version" -TimeoutSec 2 | Out-Null } catch { return 'CANCELLED' }
+      try { $state = Invoke-PageScript $socket ([ref]$nextId) $ReadStateScript }
+      catch {
+        $socket = & $connectToPage
+        if (-not $socket) { return 'CANCELLED' }
+        continue
+      }
+      if ($state -ne 'ready') {
+        # 微信二维码几分钟就过期：没登录的话每 4 分钟自动刷新一次，用户不用自己点
+        if (((Get-Date) - $lastRefresh).TotalMinutes -ge 4) {
+          try { Invoke-PageScript $socket ([ref]$nextId) 'location.reload()' | Out-Null } catch { }
+          $lastRefresh = Get-Date
+        }
+        continue
+      }
       Start-Sleep -Seconds 2   # 等跳转到控制台页面稳定下来
       $result = Invoke-PageScript $socket ([ref]$nextId) $CreateKeyScript
       if ($result -like 'KEY:*') { return $result.Substring(4) }
@@ -241,6 +262,7 @@ if (Test-Path $codexCli) {
   $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir -ScriptBlock {
     param($cli, $codexHomeDir, $dir)
     $env:CODEX_HOME = $codexHomeDir
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex 输出 UTF-8，不设的话中文回复会乱码
     Set-Location $dir
     cmd /c "`"$cli`" exec --ephemeral --skip-git-repo-check `"只回复两个字：好了`" < NUL 2>NUL"
   }
