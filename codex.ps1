@@ -277,6 +277,12 @@ if (-not $env:CODEX_SETUP_NO_OPEN) {
 Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue
 Say "完成！Codex 已经打开，用的是智谱免费模型 $Model。"
 
+# ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
+# HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
+if ($env:HL_TOKEN) {
+  try { Invoke-RestMethod -TimeoutSec 6 -Method Post -ContentType 'application/json' -Body (@{ token = $env:HL_TOKEN } | ConvertTo-Json) 'https://humanslive.ai/api/tools/progress/claim' | Out-Null } catch { }
+}
+
 # ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
 # 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
 function Show-Banner($source) {
