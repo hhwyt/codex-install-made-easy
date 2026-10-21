@@ -276,3 +276,23 @@ if (-not $env:CODEX_SETUP_NO_OPEN) {
 }
 Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue
 Say "完成！Codex 已经打开，用的是智谱免费模型 $Model。"
+
+# ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
+# 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+function Show-Banner($source) {
+  $text = $null
+  try { $text = Invoke-RestMethod -TimeoutSec 6 "https://humanslive.ai/api/install-banner?f=$source" } catch { }
+  if (-not $text) { Write-Host ''; Write-Host '  更多免费工具和服务：https://humanslive.ai'; Write-Host ''; return }
+  foreach ($line in (($text -replace "`r", '' -replace [char]27, '') -split "`n")) {
+    $p = $line -split "`t"
+    switch ($p[0]) {
+      'rule'  { Write-Host ('  ' + $p[1]) -ForegroundColor DarkGray }
+      'brand' { Write-Host ('  ' + $p[1]) -NoNewline -ForegroundColor White; Write-Host $p[2] }
+      'head'  { Write-Host ('  ' + $p[1]) -NoNewline -ForegroundColor Cyan; Write-Host ('  ' + $p[2]) -ForegroundColor DarkGray }
+      'row'   { Write-Host ('    ' + $p[1]) -NoNewline; Write-Host $p[2] -ForegroundColor Gray }
+      'link'  { Write-Host ('    ' + $p[1]) -ForegroundColor Cyan }
+      default { Write-Host '' }
+    }
+  }
+}
+Show-Banner codex

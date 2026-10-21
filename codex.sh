@@ -249,3 +249,26 @@ if [ -x "$CODEX_CLI" ]; then
 fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
 say "完成！Codex 已经打开，用的是智谱免费模型 ${MODEL}。"
+
+# ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
+# 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+show_banner() {
+  local banner kind a b reset="" dim="" bold="" blue="" link=""
+  banner=$(curl -fsS --max-time 6 "https://humanslive.ai/api/install-banner?f=$1" 2>/dev/null | tr -d '\033\r') || banner=""
+  if [ -z "$banner" ]; then printf '\n  更多免费工具和服务：https://humanslive.ai\n\n' >&2; return 0; fi
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    reset=$'\033[0m' dim=$'\033[2m' bold=$'\033[1m' blue=$'\033[1;38;5;33m' link=$'\033[4;38;5;33m'
+  fi
+  while IFS=$'\t' read -r kind a b; do
+    case "$kind" in
+      rule)  printf '  %s%s%s\n' "$dim" "$a" "$reset" ;;
+      brand) printf '  %s%s%s%s\n' "$bold" "$a" "$reset" "$b" ;;
+      head)  printf '  %s%s%s  %s%s%s\n' "$blue" "$a" "$reset" "$dim" "$b" "$reset" ;;
+      row)   printf '    %s%s%s%s\n' "$a" "$dim" "$b" "$reset" ;;
+      link)  printf '    %s%s%s\n' "$link" "$a" "$reset" ;;
+      *)     printf '\n' ;;
+    esac
+  done <<< "$banner" >&2
+  return 0
+}
+show_banner codex
