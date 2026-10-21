@@ -62,7 +62,7 @@ install_codex_app() {
   app_in_dmg=$(ls -d "$mount_point"/*.app | head -1)
   codesign --verify --deep --strict "$app_in_dmg" 2>/dev/null || { hdiutil detach "$mount_point" -quiet; fail "下载的安装包签名校验失败，已停止安装。"; }
   team=$(codesign -dv "$app_in_dmg" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-  [ "$team" = "$OPENAI_TEAM_ID" ] || { hdiutil detach "$mount_point" -quiet; fail "安装包不是 OpenAI 官方签名（$team），已停止安装。"; }
+  [ "$team" = "$OPENAI_TEAM_ID" ] || { hdiutil detach "$mount_point" -quiet; fail "安装包不是 OpenAI 官方签名（${team}），已停止安装。"; }
   info "已确认是 OpenAI 官方原版，正在安装……"
   ditto "$app_in_dmg" "/Applications/$(basename "$app_in_dmg")"
   hdiutil detach "$mount_point" -quiet
@@ -70,7 +70,7 @@ install_codex_app() {
 
 say "第 1 步：安装 Codex"
 if CODEX_APP=$(find_codex_app); then
-  info "已安装：$CODEX_APP，跳过"
+  info "已安装：${CODEX_APP}，跳过"
 else
   install_codex_app
   CODEX_APP=$(find_codex_app) || fail "安装后没找到 Codex App。"
@@ -206,7 +206,7 @@ for candidate in $FREE_MODELS; do
     sleep 3
   done
 done
-[ -n "$MODEL" ] || fail "智谱免费模型暂时不可用（HTTP $status），请稍后重新运行本脚本。"
+[ -n "$MODEL" ] || fail "智谱免费模型暂时不可用（HTTP ${status}），请稍后重新运行本脚本。"
 info "可用：$MODEL"
 
 # ---------- 第 4 步：写 Codex 配置 ----------
@@ -233,7 +233,7 @@ if [ -f "$AUTH" ]; then cp "$AUTH" "$AUTH$BACKUP_SUFFIX"; BACKED_UP=1; fi
 } > "$WORK_DIR/config.toml"
 mv "$WORK_DIR/config.toml" "$CONFIG"
 ( umask 077; printf '{"OPENAI_API_KEY":"%s"}\n' "$ZHIPU_API_KEY" > "$AUTH" )
-info "已写入 $CONFIG${BACKED_UP:+（原文件备份为 *$BACKUP_SUFFIX）}"
+info "已写入 $CONFIG${BACKED_UP:+（原文件备份为 *${BACKUP_SUFFIX}）}"
 
 # ---------- 第 5 步：验证并打开 Codex ----------
 say "第 5 步：验证 Codex"
@@ -248,4 +248,4 @@ if [ -x "$CODEX_CLI" ]; then
   info "Codex 回复：${reply:-（没有回复，打开后可直接试用）}"
 fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
-say "完成！Codex 已经打开，用的是智谱免费模型 $MODEL。"
+say "完成！Codex 已经打开，用的是智谱免费模型 ${MODEL}。"
