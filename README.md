@@ -6,7 +6,7 @@
 
 ## 中文
 
-让不懂电脑的普通中国人也能装好 [OpenAI Codex](https://developers.openai.com/codex/app)：**一行命令，扫一次码**，就能用上国产大模型。不用翻墙，不用自己找 API Key，不花钱。
+让不懂电脑的普通中国人也能装好 [OpenAI Codex](https://developers.openai.com/codex/app)：**一行命令，扫一次码**，就能用上国产大模型。不用科学上网，不用自己找 API Key，不花钱。
 
 ### 怎么用
 
