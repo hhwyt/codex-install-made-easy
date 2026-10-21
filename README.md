@@ -50,9 +50,9 @@
 
 在 Windows 上运行 `windows\build.bat`，会用系统自带的 .NET Framework 编译器生成 `windows\CodexSetup.exe`，不需要安装 Visual Studio。
 
-### 许可证
+### 许可
 
-[MIT](LICENSE)
+私有项目，未开源。
 
 ---
 
@@ -104,4 +104,4 @@ On Windows, run `windows\build.bat`. It builds `windows\CodexSetup.exe` with the
 
 ### License
 
-[MIT](LICENSE)
+Private project; not open source.
