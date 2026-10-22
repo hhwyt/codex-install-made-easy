@@ -31,15 +31,10 @@ function Fail($text) {
 # ---------- 第 1 步：安装 Codex App ----------
 function Get-CodexPackage { Get-AppxPackage -Name $CodexPackageName -ErrorAction SilentlyContinue | Select-Object -First 1 }
 
-function Install-CodexFromMirror {
-  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
-  $msix = Join-Path $WorkDir 'Codex.msix'
-  Info '微软商店不可用，改从国内镜像下载官方安装包……'
-  & curl.exe -fL -C - --retry 5 --connect-timeout 15 -# -o $msix "https://codexapp.agentsmirror.com/latest/$arch"
-  if ($LASTEXITCODE -ne 0) { return $false }
-  # Add-AppxPackage 自己会校验安装包签名，签名不对装不上
-  Add-AppxPackage -Path $msix -ErrorAction SilentlyContinue
-  return [bool](Get-CodexPackage)
+# 只从微软商店安装：第三方镜像下载的安装包无法可靠核对是不是 OpenAI 发布的，所以不用。
+function Open-CodexStorePage {
+  Start-Process "ms-windows-store://pdp/?ProductId=$CodexStoreId" -ErrorAction SilentlyContinue
+  Fail '没能自动从微软商店安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行本命令。'
 }
 
 Say '第 1 步：安装 Codex'
@@ -52,8 +47,7 @@ if ($codexPackage) {
     winget install --id $CodexStoreId --source msstore --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Null
   }
   $codexPackage = Get-CodexPackage
-  if (-not $codexPackage -and -not (Install-CodexFromMirror)) { Fail 'Codex 安装失败，请检查网络后重试。' }
-  $codexPackage = Get-CodexPackage
+  if (-not $codexPackage) { Open-CodexStorePage }
   Info "安装完成：$($codexPackage.Version)"
 }
 
