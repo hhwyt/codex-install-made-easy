@@ -2,7 +2,8 @@
 # 用法（PowerShell）：irm https://humanslive.ai/codex.ps1 | iex
 # 只做这几件事：下载并核对官方 Codex 安装包（国内镜像，不行就用微软商店）、打开智谱登录窗口、新建一个 API Key、
 # 写 %USERPROFILE%\.codex 下的配置、打开 Codex。和 Mac 版一样：先扫码，Codex 同时在后台下载。
-# 兼容 Windows 自带的 PowerShell 5.1；不需要管理员权限。
+# 兼容 Windows 自带的 PowerShell 5.1；不需要管理员权限：核对过 OpenAI 签名的安装包直接解压到用户自己的目录，不装系统服务。
+# 每次运行都写日志到 %LOCALAPPDATA%\HumansLive\logs，出错时把这个文件发给我们就能查；日志里不写 Key。
 
 $ErrorActionPreference = 'Continue'   # codex.exe 会往 stderr 写警告，Stop 会把它当成错误中断
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
@@ -12,6 +13,7 @@ $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USER
 $CodexStoreId = '9PLM9XGG6VKS'
 $CodexPackageName = 'OpenAI.Codex'
 $CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # 微软商店里 OpenAI.Codex 的发布者，用来核对镜像下载的安装包
+$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Codex'   # 免管理员安装的位置（和 VS Code、Cursor 的用户版装在同一类目录）
 $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPage = 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys'
@@ -22,12 +24,26 @@ $CacheDir = if ($env:CODEX_SETUP_CACHE_DIR) { $env:CODEX_SETUP_CACHE_DIR } else 
 $WorkDir = Join-Path $env:TEMP ('codex-setup-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
 
+# ---------- 日志：每一步写一行，出错时用户把文件发来就能查 ----------
+$LogFile = Join-Path $CacheDir ('logs\codex-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
+New-Item -ItemType Directory -Force (Split-Path $LogFile) | Out-Null
+function Log($text) { try { Add-Content -LiteralPath $LogFile -Value ((Get-Date -Format 'HH:mm:ss.fff') + '  ' + $text) -Encoding UTF8 } catch { } }
+
 # ---------- 终端输出 ----------
-# 只有一个强调色（蓝），次要信息用灰色，红色只用于出错。支持 ANSI 的终端里有动画（Windows Terminal 用更细的字符），
-# 输出被重定向或设了 NO_COLOR 时只打纯文字。
+# 只有一个强调色（蓝），次要信息用灰色，红色只用于出错。支持 ANSI 的终端里有动画，和 Mac 版用同一套字符；
+# 老的控制台窗口（字体里没有盲文、片假名、粗横线）用 ASCII。输出被重定向或设了 NO_COLOR 时只打纯文字。
 $E = [char]27
 $Live = $Host.UI.SupportsVirtualTerminal -and -not [Console]::IsOutputRedirected -and -not $env:NO_COLOR
-$Fancy = [bool]$env:WT_SESSION   # Windows Terminal 的字体有盲文转圈、片假名和粗横线；老的控制台窗口用 ASCII
+# 是不是 Windows Terminal：Windows 11 默认把 PowerShell 开在 Windows Terminal 里，但这时 WT_SESSION 是空的，
+# 所以看控制台窗口的类名（Windows Terminal 是 PseudoConsoleWindow，老控制台是 ConsoleWindowClass）
+$ConsoleClass = ''
+try {
+  Add-Type -Namespace HL -Name Con -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int n);'
+  $sb = New-Object Text.StringBuilder 64; [void][HL.Con]::GetClassName([HL.Con]::GetConsoleWindow(), $sb, 64); $ConsoleClass = "$sb"
+} catch { }
+$Fancy = [bool]$env:WT_SESSION -or $ConsoleClass -eq 'PseudoConsoleWindow'
+$Check = if ($Fancy) { '✓' } else { '√' }
+$Cross = if ($Fancy) { '✗' } else { '×' }
 if ($Live) {
   $R = "$E[0m"; $Bold = "$E[1m"; $Dim = "$E[2m"; $Blue = "$E[38;5;33m"; $Head = "$E[38;5;153m"; $Deep = "$E[38;5;25m"; $Red = "$E[31m"
 } else { $R = $Bold = $Dim = $Blue = $Head = $Deep = $Red = '' }
@@ -102,26 +118,34 @@ function Header($title, $subtitle) {
   } else { Write-Host "  HUMANSLIVE.AI ▸ $title" }
   Write-Host "  $Dim$subtitle$R"
 }
-function Section($title, $note) { Write-Host ''; Write-Host "  $Blue$Bold▸$R $Bold$title$R  $Dim$note$R" }
-function Say($text) { $Script:Step++; Write-Host ''; Write-Host "  $Blue$Bold[$($Script:Step)/$Steps]$R $Bold$text$R" }
-function Info($text) { Write-Host "       $Dim$text$R" }
-function Ok($text)   { Write-Host "     $Blue√$R $text" }
-function Todo($text) { Write-Host "     $Blue→$R $Bold$text$R" }
+function Section($title, $note) { Log "== $title $note"; Write-Host ''; Write-Host "  $Blue$Bold▸$R $Bold$title$R  $Dim$note$R" }
+function Say($text) { $Script:Step++; Log "[$($Script:Step)/$Steps] $text"; Write-Host ''; Write-Host "  $Blue$Bold[$($Script:Step)/$Steps]$R $Bold$text$R" }
+function Info($text) { Log "   $text"; Write-Host "       $Dim$text$R" }
+function Ok($text)   { Log "ok $text"; Write-Host "     $Blue$Check$R $text" }
+function Todo($text) { Log "-> $text"; Write-Host "     $Blue→$R $Bold$text$R" }
 function Finish($text) {
   $took = (Get-Date) - $Script:Started
   $tookText = if ($took.TotalSeconds -lt 60) { "$([int]$took.TotalSeconds) 秒" } else { "$([int][Math]::Floor($took.TotalMinutes)) 分 $($took.Seconds) 秒" }
+  Log "done in $tookText"
   Write-Host ''
-  if ($Live) { Show-Decode "$Blue$Bold" '√ ALL SYSTEMS GO · 全部完成' } else { Write-Host '  √ ALL SYSTEMS GO · 全部完成' }
+  if ($Live) { Show-Decode "$Blue$Bold" "$Check ALL SYSTEMS GO · 全部完成" } else { Write-Host "  $Check ALL SYSTEMS GO · 全部完成" }
   Write-Host "     ${Dim}用时 $tookText$R"
   Write-Host "     $text"
 }
-function Fail($text) {
+# 出错时：说清楚怎么办，指出日志文件并在资源管理器里选中它，方便用户发给我们
+function Show-Error($text) {
   if ($Live) { W "`r$E[K" }
   Write-Host ''
-  Write-Host "  $Red$Bold× 出错了$R"
+  Write-Host "  $Red$Bold$Cross 出错了$R"
   Write-Host "     $text"
-  Write-Host "     ${Dim}需要帮助：截图发到社群 https://humanslive.ai/community$R"
+  Write-Host "     ${Dim}日志：$LogFile$R"
+  Write-Host "     ${Dim}需要帮助：把这个日志文件发到社群 https://humanslive.ai/community$R"
   Write-Host ''
+  Start-Process explorer.exe "/select,`"$LogFile`"" -ErrorAction SilentlyContinue
+}
+function Fail($text) {
+  Log "FAIL $text"
+  Show-Error $text
   throw 'HL_FAIL'   # 外面的 catch 认这个，不再让 PowerShell 打一大段红色错误
 }
 
@@ -148,6 +172,7 @@ function Start-DownloadProcess {
   $d.Proc = Start-Process curl.exe -PassThru -WindowStyle Hidden -ArgumentList @('-fsSL', '-C', '-', '--retry', '3', '--connect-timeout', '15', '-o', "`"$($d.File)`"", $d.Url)
   $null = $d.Proc.Handle   # 不先取一次 Handle，进程结束后拿不到退出码
   $d.Tries++
+  Log "download try $($d.Tries): $($d.Url)"
 }
 function Start-Download($url, $name, $file) {
   $headers = (& curl.exe -sIL --connect-timeout 15 --max-time 20 $url 2>$null) -join "`n"
@@ -161,12 +186,14 @@ function Start-Download($url, $name, $file) {
   Set-Content "$file.etag" $etag -NoNewline
   $size = if (Test-Path $file) { (Get-Item $file).Length } else { 0 }
   if ($total -gt 0 -and $size -gt $total) { Remove-Item $file -Force; $size = 0 }
+  Log "download $name total=$total etag=$etag cached=$size"
   $Script:Dl = @{ Url = $url; Name = $name; File = $file; Total = $total; Proc = $null; Tries = 0; Done = $false; Failed = $false }
   if ($total -gt 0 -and $size -eq $total) { $Script:Dl.Done = $true } else { Start-DownloadProcess }
 }
 function Update-Download {
   $d = $Script:Dl
   if (-not $d -or $d.Done -or $d.Failed -or -not $d.Proc.HasExited) { return }
+  Log "download try $($d.Tries) exit=$($d.Proc.ExitCode) size=$(Get-DownloadedBytes)"
   if ($d.Proc.ExitCode -eq 0) { $d.Done = $true }
   elseif ($d.Tries -lt 5) { Start-DownloadProcess }
   else { $d.Failed = $true }
@@ -233,16 +260,17 @@ function Select-Source {
   $el = ((Get-Date) - $start).TotalSeconds
   $speed = if ($el -gt 0) { $size / $el } else { 0 }
   $useMirror = $speed -gt 300KB
+  Log "probe mirror: $size bytes in $([Math]::Round($el, 1))s, curl exit=$($proc.ExitCode), useMirror=$useMirror"
   $file = Join-Path $CacheDir "Codex-$arch.msix"
   if ($Live) {
     $bar = if ($barW -ge 6) { "$Blue$($BarOn * $barW)$R  " } else { '' }
     $num = if ($speed -gt 0) { '{0,5} MB/s' -f (MB $speed) } else { '   连不上 ' }
     if ($useMirror) {
-      W ("$E[2A`r$E[K     $Blue$Bold√$R $($names[0])  $Dim$($tags[0])$R  $bar$num  $Blue${Bold}最快$R`n" +
+      W ("$E[2A`r$E[K     $Blue$Bold$Check$R $($names[0])  $Dim$($tags[0])$R  $bar$num  $Blue${Bold}最快$R`n" +
          "`r$E[K     $Dim· $($names[1])  $($tags[1])  备用$R`n")
     } else {
       W ("$E[2A`r$E[K     $Dim· $($names[0])  $($tags[0])  $num$R`n" +
-         "`r$E[K     $Blue$Bold√$R $($names[1])  $Dim$($tags[1])$R  ${Blue}${Bold}改用这条$R`n")
+         "`r$E[K     $Blue$Bold$Check$R $($names[1])  $Dim$($tags[1])$R  ${Blue}${Bold}改用这条$R`n")
     }
   }
   if (-not $useMirror) { return $null }
@@ -255,9 +283,29 @@ function Select-Source {
 }
 
 # ---------- 安装 Codex ----------
+# Codex 的安装包带一个系统服务，按正常方式安装（双击、商店、Add-AppxPackage）都要管理员权限。
+# 所以默认不「安装」它：核对是 OpenAI 官方原版后，解压到 %LOCALAPPDATA%\Programs\Codex，建开始菜单和桌面快捷方式。
+# 代价：不会自动更新（重新运行这行命令会装最新版），也没有那个系统服务（Codex 的命令沙箱用不需要管理员的模式）。
+# 以前从微软商店装过的，直接用商店版。
 function Get-CodexPackage { Get-AppxPackage -Name $CodexPackageName -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1 }
+function Get-Codex {
+  $pkg = Get-CodexPackage
+  if ($pkg) { return @{ Kind = 'store'; Version = "$($pkg.Version)"; Package = $pkg; Cli = Join-Path $pkg.InstallLocation 'app\resources\codex.exe' } }
+  $exe = Join-Path $InstallDir 'app\ChatGPT.exe'
+  if (Test-Path $exe) {
+    $version = try { ([xml][IO.File]::ReadAllText((Join-Path $InstallDir 'AppxManifest.xml'))).Package.Identity.Version } catch { '?' }
+    return @{ Kind = 'portable'; Version = $version; Exe = $exe; Cli = Join-Path $InstallDir 'app\resources\codex.exe' }
+  }
+  $null
+}
+function Open-Codex($codex) {
+  if ($codex.Kind -eq 'store') {
+    $appId = (Get-AppxPackageManifest $codex.Package).Package.Applications.Application.Id | Select-Object -First 1
+    Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
+  } else { Start-Process $codex.Exe }
+}
 
-# 镜像下载的安装包：核对是不是微软商店里那份 OpenAI 官方的 Codex（包名、发布者、签名），再安装
+# 镜像下载的安装包：核对是不是微软商店里那份 OpenAI 官方的 Codex（包名、发布者、签名），解压，再核对程序本身的签名
 function Install-FromMsix($file) {
   $job = Start-Job -ArgumentList $file -ScriptBlock {
     param($f)
@@ -269,26 +317,53 @@ function Install-FromMsix($file) {
       [xml]$manifest = $reader.ReadToEnd(); $reader.Close()
     } finally { $zip.Dispose() }
     $sig = Get-AuthenticodeSignature $f
-    "$($manifest.Package.Identity.Name)|$($manifest.Package.Identity.Publisher)|$($sig.Status)"
+    "$($manifest.Package.Identity.Name)|$($manifest.Package.Identity.Publisher)|$($sig.Status)|$($manifest.Package.Identity.Version)"
   }
   while ($job.State -eq 'Running') { Wait-Tick 0.3 '核对安装包的签名和发布者' $Script:Started }
   Clear-Line
   $check = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
   Remove-Job $job -Force -ErrorAction SilentlyContinue
-  $name, $publisher, $status = "$check" -split '\|'
+  Log "package check: $check"
+  $name, $publisher, $status, $version = "$check" -split '\|'
   if ($name -ne $CodexPackageName -or $publisher -ne $CodexPublisher -or $status -ne 'Valid') {
     Remove-Item $file -Force -ErrorAction SilentlyContinue
     Info "安装包核对没通过（$check），已删掉，改用微软商店"
     return $false
   }
-  Ok '已确认是 OpenAI 官方原版（微软商店签名）'
-  $job = Start-Job -ArgumentList $file -ScriptBlock { param($f) try { Add-AppxPackage -Path $f -ErrorAction Stop; 'OK' } catch { "ERROR:$($_.Exception.Message)" } }
+  Ok "已确认是 OpenAI 官方原版 $version（微软商店签名）"
+  # 解压到旁边的临时目录：安装包里的文件名是网址编码的（%40 = @），解压后改回来；核对主程序签名后再换上
+  $job = Start-Job -ArgumentList $file, $InstallDir -ScriptBlock {
+    param($f, $dir)
+    try {
+      $tmp = "$dir.new"
+      Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      [IO.Compression.ZipFile]::ExtractToDirectory($f, $tmp)
+      Get-ChildItem $tmp -Recurse -Filter '*%*' | Sort-Object { $_.FullName.Length } -Descending |
+        ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ([Uri]::UnescapeDataString($_.Name)) -ErrorAction Stop }
+      $sig = Get-AuthenticodeSignature (Join-Path $tmp 'app\ChatGPT.exe')
+      if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike '*OpenAI*') { Remove-Item $tmp -Recurse -Force; return "ERROR:主程序签名不对（$($sig.Status) $($sig.SignerCertificate.Subject)）" }
+      if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction Stop }
+      Move-Item $tmp $dir -ErrorAction Stop
+      'OK'
+    } catch { "ERROR:$($_.Exception.Message)" }
+  }
   $since = Get-Date
   while ($job.State -eq 'Running') { Wait-Tick 0.3 '安装 Codex' $since }
   Clear-Line
   $result = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
   Remove-Job $job -Force -ErrorAction SilentlyContinue
-  if ("$result" -ne 'OK') { Info "直接安装没成功（$($result -replace '^ERROR:', '')），改用微软商店"; return $false }
+  Log "unpack: $result"
+  if ("$result" -ne 'OK') { Info "安装没成功（$($result -replace '^ERROR:', '')），改用微软商店"; return $false }
+  # 开始菜单和桌面各放一个快捷方式，名字叫 Codex
+  $shell = New-Object -ComObject WScript.Shell
+  foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
+    try {
+      $lnk = $shell.CreateShortcut((Join-Path $folder 'Codex.lnk'))
+      $lnk.TargetPath = Join-Path $InstallDir 'app\ChatGPT.exe'; $lnk.WorkingDirectory = Join-Path $InstallDir 'app'; $lnk.Description = 'Codex'
+      $lnk.Save(); Log "shortcut: $folder"
+    } catch { Log "shortcut failed: $folder $($_.Exception.Message)" }
+  }
   Remove-Item $file, "$file.etag" -Force -ErrorAction SilentlyContinue
   $true
 }
@@ -299,10 +374,12 @@ function Install-FromStore {
     Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
   }
   Info '从微软商店安装（会自动同意商店条款）'
+  Todo '商店版要管理员确认：弹出「你要允许此应用对你的设备进行更改吗？」时，点「是」'
   $winget = Start-Process winget -PassThru -WindowStyle Hidden -ArgumentList "install --id $CodexStoreId --source msstore --accept-package-agreements --accept-source-agreements --disable-interactivity"
   $since = Get-Date
   while (-not $winget.HasExited) { Wait-Tick 0.3 '从微软商店安装 Codex' $since }
   Clear-Line
+  Log "winget exit=$($winget.ExitCode)"   # 没点「是」时 winget 也报成功，所以外面还要再查一次装没装上
 }
 
 # ---------- 智谱 API Key ----------
@@ -382,7 +459,7 @@ function Get-ZhipuKeyAutomatically {
     if (-not $socket) { return 'ERROR:登录窗口没有打开' }
     $nextId = 1
     $loginSince = Get-Date
-    $deadline = (Get-Date).AddMinutes(15)
+    $deadline = (Get-Date).AddMinutes(60)
     $lastRefresh = Get-Date
     while ((Get-Date) -lt $deadline) {
       Wait-Tick 1.5 '等待扫码登录' $loginSince
@@ -447,6 +524,7 @@ function Find-FreeModel($key) {
       Clear-Line
       $Script:LastStatus = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
       Remove-Job $job -Force -ErrorAction SilentlyContinue
+      Log "model test $candidate try $($attempt + 1): HTTP $Script:LastStatus"
       if ($Script:LastStatus -eq 200) { return $candidate }
       if ($Script:LastStatus -ne 429) { break }
       Start-Sleep -Seconds 3
@@ -463,10 +541,13 @@ try {
   # ---------- 准备：系统检测、线路测速，然后在后台开始下载 ----------
   Section '系统检测' ''
   $os = Get-CimInstance Win32_OperatingSystem
+  Log "os=$($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE ps=$($PSVersionTable.PSVersion) console=$ConsoleClass fancy=$Fancy live=$Live"
+  Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) edge=$(Find-Edge)"
   Ok "$($os.Caption -replace 'Microsoft ', '') · $(if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM' } else { 'x64' })"
-  $codexPackage = Get-CodexPackage
+  $codex = Get-Codex
   $source = $null
-  if ($codexPackage) {
+  if ($codex) {
+    Log "codex already installed: $($codex.Kind) $($codex.Version)"
     Ok '已经装过 Codex，这次不用下载'
   } else {
     $freeGb = [int]((Get-PSDrive ($env:LOCALAPPDATA.Substring(0, 1))).Free / 1GB)
@@ -501,12 +582,15 @@ try {
       $outcome = Get-ZhipuKeyAutomatically
       Clear-Line
       if ($outcome -match $ZhipuKeyPattern) {
+        Log 'login outcome: key created'
         $ZhipuApiKey = $outcome
         Ok '已登录，自动创建好 API Key'
       } else {
+        # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
+        Log "login outcome: $outcome"
         switch -Wildcard ($outcome) {
-          'CANCELLED' { Info '登录窗口被关闭了，改用手动方式。' }
-          'TIMEOUT'   { Info '等待登录超时，改用手动方式。' }
+          'CANCELLED' { Fail '智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。' }
+          'TIMEOUT'   { Fail '一个小时内没有扫码登录。重新运行这行命令，扫码登录就行。' }
           default     { Info "自动创建没成功（$($outcome -replace '^ERROR:', '')），改用手动方式。" }
         }
         $ZhipuApiKey = Get-ZhipuKeyFromClipboard
@@ -519,35 +603,8 @@ try {
     if (-not $Model) { Fail "智谱免费模型暂时不可用（HTTP $Script:LastStatus），请稍后重新运行这行命令。" }
   }
   Ok "智谱免费模型可以用：$Model"
-
-  # ---------- [2/3] 安装 Codex ----------
-  Say '安装 Codex'
-  if ($codexPackage) {
-    Ok "已经装过 Codex $($codexPackage.Version)，跳过"
-  } else {
-    $installed = $false
-    if ($Script:Dl) {
-      if (-not $Script:Dl.Done) {
-        Info "下载 Codex（$($Script:Dl.Name)，约 $([int]($Script:Dl.Total / 1MB)) MB；中断后重新运行会接着下）"
-        Show-DownloadProgress
-      }
-      if ($Script:Dl.Done) {
-        Ok "下载完成（$(MB (Get-DownloadedBytes)) MB）"
-        $installed = Install-FromMsix $Script:Dl.File
-      } else { Info '镜像下载失败，改用微软商店' }
-    }
-    if (-not $installed) { Install-FromStore }
-    $codexPackage = Get-CodexPackage
-    if (-not $codexPackage) {
-      Start-Process "ms-windows-store://pdp/?ProductId=$CodexStoreId" -ErrorAction SilentlyContinue
-      Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
-    }
-    Ok "Codex $($codexPackage.Version) 已装好"
-  }
-
-  # ---------- [3/3] 写配置、试一句、打开 ----------
+  # ---------- 拿到 Key 马上写配置：后面安装出错时重新运行不用再扫码 ----------
   # 只改 model、model_provider 和 [model_providers.zhipu]，其余配置原样保留；内容有变化时才备份原文件。UTF-8 不带 BOM。
-  Say '配置并打开 Codex'
   New-Item -ItemType Directory -Force $CodexHome | Out-Null
   $backupSuffix = '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   $keptLines = @()
@@ -572,7 +629,36 @@ try {
   Ok "已写入 $($configPath -replace [regex]::Escape($env:USERPROFILE), '~')"
   if ($backedUp) { Info "原来的配置已备份为 *$backupSuffix" }
 
-  $codexCli = Join-Path $codexPackage.InstallLocation 'app\resources\codex.exe'
+
+  # ---------- [2/3] 安装 Codex ----------
+  Say '安装 Codex'
+  if ($codex) {
+    Ok "已经装过 Codex $($codex.Version)，跳过"
+  } else {
+    $installed = $false
+    if ($Script:Dl) {
+      if (-not $Script:Dl.Done) {
+        Info "下载 Codex（$($Script:Dl.Name)，约 $([int]($Script:Dl.Total / 1MB)) MB；中断后重新运行会接着下）"
+        Show-DownloadProgress
+      }
+      if ($Script:Dl.Done) {
+        Ok "下载完成（$(MB (Get-DownloadedBytes)) MB）"
+        $installed = Install-FromMsix $Script:Dl.File
+      } else { Info '镜像下载失败，改用微软商店' }
+    }
+    if (-not $installed) { Install-FromStore }
+    $codex = Get-Codex
+    if (-not $codex) {
+      Start-Process "ms-windows-store://pdp/?ProductId=$CodexStoreId" -ErrorAction SilentlyContinue
+      Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
+    }
+    Log "codex installed: $($codex.Kind) $($codex.Version)"
+    Ok "Codex $($codex.Version) 已装好"
+  }
+
+  # ---------- [3/3] 试一句、打开 ----------
+  Say '打开 Codex'
+  $codexCli = $codex.Cli
   if (Test-Path $codexCli) {
     # 不关掉标准输入 codex 会一直等；用后台任务限时 120 秒
     $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir -ScriptBlock {
@@ -587,13 +673,12 @@ try {
     Clear-Line
     $reply = if ($job.State -ne 'Running') { Receive-Job $job | Select-Object -Last 1 } else { Stop-Job $job; $null }
     Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Log "verify reply: $reply"
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
   }
-  if (-not $env:CODEX_SETUP_NO_OPEN) {
-    $appId = (Get-AppxPackageManifest $codexPackage).Package.Applications.Application.Id | Select-Object -First 1
-    Start-Process "shell:AppsFolder\$($codexPackage.PackageFamilyName)!$appId"
-  }
+  if (-not $env:CODEX_SETUP_NO_OPEN) { Open-Codex $codex }
   Finish "Codex 已经打开，用的是智谱免费模型 $Model"
+  Info '以后从开始菜单或桌面上的「Codex」打开（窗口标题叫 ChatGPT，就是它）'
 
   # ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
   # HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
@@ -623,7 +708,12 @@ try {
   Write-Host "  ${Bold}装好了，可以关掉这个窗口。$R"
   Write-Host ''
 } catch {
-  if ("$_" -ne 'HL_FAIL') { throw }
+  # 意料之外的错误：记下完整信息，给用户看一句话和日志位置，不打一大段红字
+  if ("$_" -ne 'HL_FAIL') {
+    Log "EXCEPTION $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    Log "AT $($_.InvocationInfo.PositionMessage -replace "`r?`n", ' | ')"
+    Show-Error "安装中途出了意外：$($_.Exception.Message)"
+  }
 } finally {
   # Ctrl+C 或出错退出时，连同后台下载一起停掉；已下载的部分留在缓存里，重新运行会接着下
   Stop-Download

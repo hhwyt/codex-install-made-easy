@@ -2,7 +2,13 @@
 # Codex 一键安装（Mac）：装好官方 Codex App，用微信扫码登录智谱后自动创建 API Key，接上智谱免费模型。
 # 用法：curl -fsSL https://humanslive.ai/codex.sh | bash
 # 只做这几件事：下载并校验官方 Codex、打开智谱登录窗口、新建一个 API Key、写 ~/.codex 下的配置、打开 Codex。
+# 每次运行都写日志到 ~/Library/Logs/HumansLive，出错时把这个文件发给我们就能查；日志里不写 Key。
 set -euo pipefail
+
+# ---------- 日志：每一步写一行，出错时用户把文件发来就能查 ----------
+LOG_FILE="$HOME/Library/Logs/HumansLive/codex-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "${LOG_FILE%/*}" 2>/dev/null || true
+log() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | sed $'s/\033\\[[0-9;]*m//g' >> "$LOG_FILE" 2>/dev/null || true; }
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 OPENAI_TEAM_ID="2DC432GLL2"
@@ -164,23 +170,35 @@ header() {
   printf '  %s%s%s\n' "$C_DIM" "$2" "$C_RESET" >&2
 }
 # 不编号的准备阶段（系统检测、线路测速）
-section() { printf '\n  %s▸%s %s%s%s  %s%s%s\n' "$C_BLUE$C_BOLD" "$C_RESET" "$C_BOLD" "$1" "$C_RESET" "$C_DIM" "${2:-}" "$C_RESET" >&2; }
-say()  { STEP=$((STEP + 1)); printf '\n  %s[%d/%d]%s %s%s%s\n' "$C_BLUE$C_BOLD" "$STEP" "$STEPS" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
-info() { printf '       %s%s%s\n' "$C_DIM" "$*" "$C_RESET" >&2; }
-ok()   { printf '     %s✓%s %s\n' "$C_BLUE" "$C_RESET" "$*" >&2; }
-todo() { printf '     %s→%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
+section() { log "== $1 ${2:-}"; printf '\n  %s▸%s %s%s%s  %s%s%s\n' "$C_BLUE$C_BOLD" "$C_RESET" "$C_BOLD" "$1" "$C_RESET" "$C_DIM" "${2:-}" "$C_RESET" >&2; }
+say()  { STEP=$((STEP + 1)); log "[$STEP/$STEPS] $*"; printf '\n  %s[%d/%d]%s %s%s%s\n' "$C_BLUE$C_BOLD" "$STEP" "$STEPS" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
+info() { log "   $*"; printf '       %s%s%s\n' "$C_DIM" "$*" "$C_RESET" >&2; }
+ok()   { log "ok $*"; printf '     %s✓%s %s\n' "$C_BLUE" "$C_RESET" "$*" >&2; }
+todo() { log "-> $*"; printf '     %s→%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
 done_line() {
   local took="$((SECONDS % 60)) 秒"; [ "$SECONDS" -lt 60 ] || took="$((SECONDS / 60)) 分 $took"
+  log "done in $took"
   printf '\n' >&2
   if [ -n "$LIVE" ]; then perl "$WORK_DIR/fx.pl" decode "$C_BLUE$C_BOLD" "✓ ALL SYSTEMS GO · 全部完成"
   else printf '  ✓ ALL SYSTEMS GO · 全部完成\n' >&2; fi
   printf '     %s用时 %s%s\n     %s\n' "$C_DIM" "$took" "$C_RESET" "$*" >&2
 }
-fail() {
+# 出错时：说清楚怎么办，指出日志文件并在访达里选中它，方便用户发给我们
+show_error() {
   [ -z "$LIVE" ] || printf '\r\033[K' >&2
-  printf '\n  %s✗ 出错了%s\n     %s\n     %s需要帮助：截图发到社群 https://humanslive.ai/community%s\n\n' "$C_RED$C_BOLD" "$C_RESET" "$*" "$C_DIM" "$C_RESET" >&2
+  printf '\n  %s✗ 出错了%s\n     %s\n     %s日志：%s%s\n     %s需要帮助：把这个日志文件发到社群 https://humanslive.ai/community%s\n\n' \
+    "$C_RED$C_BOLD" "$C_RESET" "$*" "$C_DIM" "$LOG_FILE" "$C_RESET" "$C_DIM" "$C_RESET" >&2
+  open -R "$LOG_FILE" 2>/dev/null || true
+}
+FAILED=""
+fail() {
+  log "FAIL $*"
+  FAILED=1
+  show_error "$*"
   exit 1
 }
+# 意料之外的错误（set -e 让脚本停下）：记下是哪一行哪条命令，退出时给用户看一句话和日志位置
+trap 'log "ERROR line $LINENO: $BASH_COMMAND (exit $?)"' ERR
 
 # 转圈那一行末尾的附加信息（比如后台下载进度），默认没有
 spin_note() { :; }
@@ -250,8 +268,10 @@ DL_PID=""
 
 # Ctrl+C 或出错退出时，连同后台下载一起停掉；已下载的部分留在缓存里，重新运行会接着下
 cleanup() {
+  local rc=$?
   if [ -n "$DL_PID" ]; then pkill -P "$DL_PID" 2>/dev/null || true; kill "$DL_PID" 2>/dev/null || true; fi
   rm -rf "$WORK_DIR"
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 130 ] && [ -z "$FAILED" ]; then show_error "安装中途出了意外（退出码 $rc）。"; fi
 }
 trap cleanup EXIT
 trap 'printf "\n\n  已停止。重新运行这行命令会接着之前的进度。\n\n" >&2; exit 130' INT TERM
@@ -288,8 +308,10 @@ download_codex_dmg() {
   size=$(file_size "$file")
   if [ "$total" -gt 0 ] && [ "$size" -gt "$total" ]; then rm -f "$file"; size=0; fi
   if [ "$total" -gt 0 ] && [ "$size" -eq "$total" ]; then return 0; fi
-  for _ in 1 2 3 4 5; do
-    curl -fsSL -C - --retry 3 --connect-timeout 15 -o "$file" "$url" && return 0
+  log "download $name total=$total etag=$etag cached=$size"
+  for try in 1 2 3 4 5; do
+    curl -fsSL -C - --retry 3 --connect-timeout 15 -o "$file" "$url" && { log "download try $try ok size=$(file_size "$file")"; return 0; }
+    log "download try $try failed size=$(file_size "$file")"
     sleep 2
   done
   return 1
@@ -322,6 +344,7 @@ race_sources() {
   fi
   wait 2>/dev/null || true
   read -r best speeds <<< "$result"
+  log "race: best=$best speeds=$speeds"
   [ -n "$LIVE" ] || for ((i = 0; i < n; i++)); do info "${names[i]}：$(mb "$(echo $speeds | cut -d' ' -f$((i + 1)))") MB/s"; done
   [ "$best" -ge 0 ] 2>/dev/null || fail "下载线路都连不上。检查网络后重新运行这行命令。"
   SOURCE_URL=${urls[best]}; SOURCE_NAME=${names[best]}; SOURCE_FILE="$CACHE_DIR/Codex-${keys[best]}.dmg"
@@ -358,6 +381,7 @@ install_codex_app() {
     fail "下载的安装包不完整或被改动过，已经删掉。重新运行这行命令即可。"
   }
   team=$(codesign -dv "$app_in_dmg" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+  log "codesign team=$team app=$(basename "$app_in_dmg") version=$(defaults read "$app_in_dmg/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)"
   [ "$team" = "$OPENAI_TEAM_ID" ] || { hdiutil detach "$mount_point" -quiet; rm -f "$dmg"; fail "安装包不是 OpenAI 官方签名（${team}），已停止安装。"; }
   ok "已确认是 OpenAI 官方原版"
   need=$(defaults read "$app_in_dmg/Contents/Info.plist" LSMinimumSystemVersion 2>/dev/null || echo 0)
@@ -375,9 +399,11 @@ install_codex_app() {
 # ---------- 准备：系统检测、线路测速，然后在后台开始下载 ----------
 section "系统检测"
 if [ "$(uname -m)" = "arm64" ]; then CHIP="Apple 芯片"; else CHIP="Intel 芯片"; fi
+log "macOS $(sw_vers -productVersion) build=$(sw_vers -buildVersion) arch=$(uname -m) shell=$BASH_VERSION term=${TERM_PROGRAM:-?} live=${LIVE:-0} proxy=$([ -n "${https_proxy:-${HTTPS_PROXY:-}}" ] && echo 1 || echo 0)"
 ok "macOS $(sw_vers -productVersion) · $CHIP"
 CODEX_APP=$(find_codex_app || true)
 if [ -n "$CODEX_APP" ]; then
+  log "codex already installed: $CODEX_APP $(defaults read "$CODEX_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)"
   ok "已经装过 Codex，这次不用下载"
 else
   mkdir -p "$CACHE_DIR"
@@ -443,7 +469,7 @@ function run() {
     } catch (e) { document.title = 'ERROR:' + e.message; }
   })()`;
 
-  const deadline = Date.now() + 15 * 60 * 1000;
+  const deadline = Date.now() + 60 * 60 * 1000;
   let outcome = 'TIMEOUT';
   let lastRefresh = Date.now();
   while (Date.now() < deadline) {
@@ -500,6 +526,7 @@ find_free_model() {
         "$ZHIPU_BASE_URL/responses" </dev/null >"$WORK_DIR/status" 2>/dev/null &
       spin $! "测试智谱免费模型 $candidate" || true
       status=$(cat "$WORK_DIR/status" 2>/dev/null); status=${status:-000}
+      log "model test $candidate: HTTP $status"
       # 智谱在 Key 无效时也回 HTTP 200，正文是 {"code":1000,"msg":"身份验证失败。","success":false}
       if [ "$status" = "200" ] && grep -q '"success":false' "$WORK_DIR/reply.json" 2>/dev/null; then
         status=401; printf '%s' "$status" > "$WORK_DIR/status"
@@ -534,12 +561,15 @@ else
     spin $! "等待扫码登录" || true
     login_outcome=$(tail -1 "$WORK_DIR/login.txt" 2>/dev/null || true)
     if [[ "$login_outcome" =~ $ZHIPU_KEY_PATTERN ]]; then
+      log "login outcome: key created"
       ZHIPU_API_KEY="$login_outcome"
       ok "已登录，自动创建好 API Key"
     else
+      # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
+      log "login outcome: ${login_outcome:-empty}"
       case "$login_outcome" in
-        CANCELLED) info "登录窗口被关闭了，改用手动方式。" ;;
-        TIMEOUT)   info "等待登录超时，改用手动方式。" ;;
+        CANCELLED) fail "智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。" ;;
+        TIMEOUT)   fail "一个小时内没有扫码登录。重新运行这行命令，扫码登录就行。" ;;
         *)         info "自动创建没成功（${login_outcome#ERROR:}），改用手动方式。" ;;
       esac
       ZHIPU_API_KEY=$(zhipu_key_by_clipboard) || fail "15 分钟内没有读到 API Key。"
@@ -551,34 +581,8 @@ else
 fi
 ok "智谱免费模型可以用：$MODEL"
 
-# ---------- 第 2 段：下载并安装 Codex ----------
-say "安装 Codex"
-if [ -n "$CODEX_APP" ]; then
-  ok "已经装过 Codex，跳过"
-else
-  spin_note() { :; }
-  if [ -n "$LIVE" ] && kill -0 "$DL_PID" 2>/dev/null; then
-    ( while [ ! -f "$WORK_DIR/dl.info" ] && kill -0 "$DL_PID" 2>/dev/null; do sleep 0.3; done ) </dev/null &
-    spin $! "连接${SOURCE_NAME}" || true
-    if [ -f "$WORK_DIR/dl.info" ]; then
-      info "下载 Codex（${SOURCE_NAME}，约 800MB；中断后重新运行会接着下）"
-      draw_progress "$DL_PID" "$(sed -n 2p "$WORK_DIR/dl.info")" "$(sed -n 3p "$WORK_DIR/dl.info")"
-    fi
-  fi
-  wait "$DL_PID" 2>/dev/null || true
-  DL_PID=""
-  [ "$(cat "$WORK_DIR/dl.rc" 2>/dev/null)" = 0 ] || fail "Codex 下载失败。检查网络后重新运行这行命令，已经下载的部分会接着下。"
-  DMG=$(sed -n 2p "$WORK_DIR/dl.info")
-  ok "下载完成（$(mb "$(file_size "$DMG")") MB）"
-  install_codex_app "$DMG"
-  rm -f "$DMG" "$DMG.etag"
-  CODEX_APP=$(find_codex_app) || fail "安装后没找到 Codex App。"
-  ok "Codex 已装好"
-fi
-
-# ---------- 第 3 段：写配置、试一句、打开 ----------
+# ---------- 拿到 Key 马上写配置：后面安装出错时重新运行不用再扫码 ----------
 # 只改 model、model_provider 和 [model_providers.zhipu]，其余配置原样保留；内容有变化时才备份原文件
-say "配置并打开 Codex"
 mkdir -p "$CODEX_HOME"
 BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
 {
@@ -605,6 +609,34 @@ chmod 600 "$AUTH"
 ok "已写入 $(short_path "$CONFIG")"
 [ -z "$BACKED_UP" ] || info "原来的配置已备份为 *${BACKUP_SUFFIX}"
 
+
+# ---------- 第 2 段：下载并安装 Codex ----------
+say "安装 Codex"
+if [ -n "$CODEX_APP" ]; then
+  ok "已经装过 Codex，跳过"
+else
+  spin_note() { :; }
+  if [ -n "$LIVE" ] && kill -0 "$DL_PID" 2>/dev/null; then
+    ( while [ ! -f "$WORK_DIR/dl.info" ] && kill -0 "$DL_PID" 2>/dev/null; do sleep 0.3; done ) </dev/null &
+    spin $! "连接${SOURCE_NAME}" || true
+    if [ -f "$WORK_DIR/dl.info" ]; then
+      info "下载 Codex（${SOURCE_NAME}，约 800MB；中断后重新运行会接着下）"
+      draw_progress "$DL_PID" "$(sed -n 2p "$WORK_DIR/dl.info")" "$(sed -n 3p "$WORK_DIR/dl.info")"
+    fi
+  fi
+  wait "$DL_PID" 2>/dev/null || true
+  DL_PID=""
+  [ "$(cat "$WORK_DIR/dl.rc" 2>/dev/null)" = 0 ] || fail "Codex 下载失败。检查网络后重新运行这行命令，已经下载的部分会接着下。"
+  DMG=$(sed -n 2p "$WORK_DIR/dl.info")
+  ok "下载完成（$(mb "$(file_size "$DMG")") MB）"
+  install_codex_app "$DMG"
+  rm -f "$DMG" "$DMG.etag"
+  CODEX_APP=$(find_codex_app) || fail "安装后没找到 Codex App。"
+  ok "Codex 已装好"
+fi
+
+# ---------- 第 3 段：试一句、打开 ----------
+say "打开 Codex"
 # 新 Mac 没有苹果的「命令行开发者工具」，Codex 第一次启动会触发系统弹窗；先说清楚，再由这里弹出
 if ! xcode-select -p >/dev/null 2>&1; then
   todo "系统会弹窗问要不要安装「命令行开发者工具」：这是苹果官方组件，Codex 要用到，点「安装」就行"
@@ -622,6 +654,7 @@ if [ -x "$CODEX_CLI" ]; then
   spin "$verify_pid" "让 Codex 回一句话" || true
   pkill -P "$watchdog_pid" 2>/dev/null || true
   reply=$(tail -1 "$WORK_DIR/verify.txt" 2>/dev/null || true)
+  log "verify reply: $reply"
   if [ -n "$reply" ]; then ok "Codex 回复：$reply"; else info "Codex 没有回复，打开后可以直接试用"; fi
 fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
