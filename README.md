@@ -51,14 +51,14 @@
 5. **写配置**（拿到 Key 马上写，后面出错重跑不用再扫码）：只改 `config.toml` 里的 `model`、`model_provider` 和 `[model_providers.zhipu]`，其余原样保留；原文件先备份为 `*.bak-时间戳`。Key 写进 `auth.json`。配置目录在 Mac 上是 `~/.codex`，在 Windows 上是 `%USERPROFILE%\.codex`。
 6. **验证并打开 Codex**：先让 Codex 回答一句话确认能用，再打开。
 
-扫码窗口最多等 60 分钟，二维码会自动刷新；窗口被关掉或超时，重新运行这行命令就行。只有自动创建 Key 失败（比如智谱改版了）时，脚本才会打开智谱的 Key 页面，你点「新建」「复制」，脚本自动从剪贴板读取，读完立即清空剪贴板。
+扫码窗口最多等 60 分钟，二维码会自动刷新；窗口被关掉、超时，或者自动创建 Key 失败（比如智谱改版了），屏幕上会说明原因、给出日志位置，重新运行这行命令就行。脚本不会读剪贴板，也没有让用户手动复制 Key 的步骤：读剪贴板会被 Windows Defender 当成盗号脚本拦截。
 
 **日志**：每次运行都写一份日志，Mac 在 `~/Library/Logs/HumansLive/`，Windows 在 `%LOCALAPPDATA%\HumansLive\logs\`。出错时屏幕上会显示日志位置并自动打开所在文件夹，把这个文件发给我们就能查。日志里不写 Key。
 
 ### 须知
 
 - 免费模型能力有限，适合简单任务。想用更强的模型，在[智谱开放平台](https://bigmodel.cn)充值后，把 `config.toml` 里的 `model` 改成付费模型即可。
-- 「新建 API Key」用的是智谱控制台的内部接口，不是公开 API，智谱改版后可能失效，失效时会自动改用手动方式。
+- 「新建 API Key」用的是智谱控制台的内部接口，不是公开 API，智谱改版后可能失效，失效时脚本会停下并给出日志，我们需要更新脚本。
 - Windows 上的 Codex（实测 26.1021.3705.0）自带一个系统服务（`CodexSandboxService`），Codex 跑命令时的沙盒靠它，Windows 规定安装它要管理员确认，所以要点一次「是」。这一下省不掉：不装成正式的包，沙盒每跑一条命令都要管理员确认，而且永远收不到新版（实测和 Codex 源码都证实）。装好以后跑命令、更新都不用再确认。当前账号不是管理员时，脚本会说明原因并停下。
 - Codex 的窗口标题叫「ChatGPT」（OpenAI 把 Codex 并进了 ChatGPT 桌面版），就是它。
 - 本项目与 OpenAI、智谱均无关联。
@@ -120,14 +120,14 @@ This repo is the source. The `public/codex*.sh` and `public/codex*.ps1` files on
 5. **Writes the config** (as soon as the key exists, so a rerun after a later failure needs no new scan): changes only `model`, `model_provider` and `[model_providers.zhipu]` in `config.toml`, keeps everything else, and backs up the original as `*.bak-<timestamp>`. The key goes into `auth.json`. The config directory is `~/.codex` on Mac and `%USERPROFILE%\.codex` on Windows.
 6. **Verifies and opens Codex**: asks Codex for a one-line reply to confirm it works, then opens it.
 
-The login window waits up to 60 minutes and refreshes the QR code by itself; if it is closed or times out, just run the command again. Only when automatic key creation fails (for example after a Zhipu redesign) does the script open Zhipu's key page: click "Create" and "Copy", and the script reads the key from the clipboard, then clears the clipboard.
+The login window waits up to 60 minutes and refreshes the QR code by itself. If it is closed, times out, or automatic key creation fails (for example after a Zhipu redesign), the screen explains why and shows where the log is; just run the command again. The script never reads the clipboard and has no manual copy-the-key step: reading the clipboard gets the script blocked by Windows Defender as a credential stealer.
 
 **Logs**: every run writes a log, under `~/Library/Logs/HumansLive/` on Mac and `%LOCALAPPDATA%\HumansLive\logs\` on Windows. On failure the screen shows where it is and opens its folder; send us that file and we can debug. Keys are never logged.
 
 ### Notes
 
 - The free models are limited and suit simple tasks. For stronger models, top up on the [Zhipu platform](https://bigmodel.cn) and set `model` in `config.toml` to a paid model.
-- Key creation uses an internal Zhipu console endpoint, not a public API. It may break after a Zhipu redesign, in which case the script falls back to the manual steps.
+- Key creation uses an internal Zhipu console endpoint, not a public API. It may break after a Zhipu redesign, in which case the script stops with a log and the script needs an update.
 - Codex for Windows (verified on 26.1021.3705.0) ships a system service (`CodexSandboxService`) that its command sandbox relies on, and Windows requires administrator confirmation to install it, hence the one "Yes". It cannot be avoided: without a properly installed package, the sandbox asks for administrator confirmation on every command and the app never receives updates (verified on a PC and in the Codex source). Once installed, running commands and updating need no further confirmation. If the current account is not an administrator, the script explains why and stops.
 - The Codex window is titled "ChatGPT" (OpenAI merged Codex into the ChatGPT desktop app); that is it.
 - This project is not affiliated with OpenAI or Zhipu.

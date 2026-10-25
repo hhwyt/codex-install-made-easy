@@ -14,7 +14,6 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 OPENAI_TEAM_ID="2DC432GLL2"
 CODEX_BUNDLE_ID="com.openai.codex"
 ZHIPU_BASE_URL="https://open.bigmodel.cn/api/v1"
-ZHIPU_KEY_PAGE="https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
 WORK_DIR="$(mktemp -d -t codex-setup)"
@@ -512,27 +511,6 @@ function run() {
 }
 JXA
 
-# 自动创建失败时的退路：在用户自己的 Safari 里打开 Key 页面，用户点「新建」「复制」，脚本从剪贴板读
-zhipu_key_by_clipboard() {
-  open "$ZHIPU_KEY_PAGE"
-  todo "已在浏览器打开智谱的 API Key 页面："
-  todo "① 点「新建 API Key」，名字随便填，点「确定」"
-  todo "② 点「复制」，复制后这里会自动继续"
-  info "（会先清空剪贴板，用来识别你复制的 Key）"
-  local clip waited=0
-  pbcopy < /dev/null
-  while [ $waited -lt 900 ]; do
-    clip=$(pbpaste 2>/dev/null | tr -d '[:space:]')
-    if [[ "$clip" =~ $ZHIPU_KEY_PATTERN ]]; then
-      pbcopy < /dev/null
-      [ -z "$LIVE" ] || printf '\r\033[K' >&2
-      echo "$clip"; return 0
-    fi
-    [ -z "$LIVE" ] || printf '\r\033[K       %s等待复制 API Key  %ds%s%s' "$C_DIM" "$waited" "$(spin_note)" "$C_RESET" >&2
-    sleep 1; waited=$((waited + 1))
-  done
-  return 1
-}
 
 # 用这个 Key 依次试智谱免费模型，能用就输出模型名；不能用时最后的 HTTP 状态码留在 $WORK_DIR/status
 find_free_model() {
@@ -585,16 +563,13 @@ else
       ok "已登录，自动创建好 API Key"
       key_note
     else
-      # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
+      # 和 Windows 版一样没有手动复制 Key 的退路：窗口被关、没扫码、智谱接口出错，都让用户重新运行，日志里留下原因
       log "login outcome: ${login_outcome:-empty}"
       case "$login_outcome" in
         CANCELLED) fail "智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。" ;;
         TIMEOUT)   fail "一个小时内没有扫码登录。重新运行这行命令，扫码登录就行。" ;;
-        *)         info "自动创建没成功（${login_outcome#ERROR:}），改用手动方式。" ;;
+        *)         fail "自动创建 API Key 没成功（${login_outcome#ERROR:}），可能是智谱的网站改版了。重新运行这行命令再试一次；还不行的话，把下面的日志发给我们，我们来修。" ;;
       esac
-      ZHIPU_API_KEY=$(zhipu_key_by_clipboard) || fail "15 分钟内没有读到 API Key。"
-      ok "已读到 API Key"
-      key_note
     fi
   fi
   [[ "$ZHIPU_API_KEY" =~ $ZHIPU_KEY_PATTERN ]] || fail "API Key 格式不对。"

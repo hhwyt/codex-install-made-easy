@@ -16,7 +16,6 @@ $CodexPackageName = 'OpenAI.Codex'
 $CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # 微软商店里 OpenAI.Codex 的发布者，用来核对镜像下载的安装包
 $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
-$ZhipuKeyPage = 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 $FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
 $DebugPort = 9333
@@ -517,23 +516,6 @@ function Get-ZhipuKeyAutomatically {
   }
 }
 
-# 自动创建失败时的退路：在用户默认浏览器里打开 Key 页面，用户点「新建」「复制」，脚本从剪贴板读
-function Get-ZhipuKeyFromClipboard {
-  Start-Process $ZhipuKeyPage
-  Todo '已在浏览器打开智谱的 API Key 页面：'
-  Todo '① 点「新建 API Key」，名字随便填，点「确定」'
-  Todo '② 点「复制」，复制后这里会自动继续'
-  Info '（会先清空剪贴板，用来识别你复制的 Key）'
-  Set-Clipboard -Value ' '
-  $since = Get-Date
-  while (((Get-Date) - $since).TotalMinutes -lt 15) {
-    $clip = ((Get-Clipboard -Raw) -replace '\s', '')
-    if ($clip -match $ZhipuKeyPattern) { Set-Clipboard -Value ' '; Clear-Line; return $clip }
-    Wait-Tick 1 '等待复制 API Key' $since
-  }
-  Clear-Line
-  return $null
-}
 
 # 用这个 Key 依次试智谱免费模型，能用就返回模型名；不能用时最后的 HTTP 状态码放在 $Script:LastStatus
 function Find-FreeModel($key) {
@@ -618,17 +600,14 @@ try {
         Ok '已登录，自动创建好 API Key'
         Show-KeyNote
       } else {
-        # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
+        # 没有手动复制 Key 的退路：读剪贴板会被 Windows Defender 当成盗号脚本拦掉（VirTool:PowerShell/MaleficAms），
+        # 而且用户不该再多做一步。窗口被关、没扫码、智谱接口出错，都让用户重新运行，日志里留下原因
         Log "login outcome: $outcome"
         switch -Wildcard ($outcome) {
           'CANCELLED' { Fail '智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。' }
           'TIMEOUT'   { Fail '一个小时内没有扫码登录。重新运行这行命令，扫码登录就行。' }
-          default     { Info "自动创建没成功（$($outcome -replace '^ERROR:', '')），改用手动方式。" }
+          default     { Fail ('自动创建 API Key 没成功（' + ($outcome -replace '^ERROR:', '') + '），可能是智谱的网站改版了。重新运行这行命令再试一次；还不行的话，把下面的日志发给我们，我们来修。') }
         }
-        $ZhipuApiKey = Get-ZhipuKeyFromClipboard
-        if (-not $ZhipuApiKey) { Fail '15 分钟内没有读到 API Key。' }
-        Ok '已读到 API Key'
-        Show-KeyNote
       }
     }
     if ($ZhipuApiKey -notmatch $ZhipuKeyPattern) { Fail 'API Key 格式不对。' }
