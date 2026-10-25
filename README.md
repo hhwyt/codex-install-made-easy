@@ -44,7 +44,7 @@
 
 1. **系统检测和线路测速**：已经装过 Codex 就跳过下载；没装的话先测速，然后在后台开始下载，用户扫码的同时在下，支持断点续传。
    - Mac：Apple 芯片同时测国内镜像和 OpenAI 官方源，国内镜像只要不比最快的慢 30% 以上就用它；Intel 芯片只有国内镜像。安装前确认是 OpenAI 官方签名（Team ID `2DC432GLL2`）。
-   - Windows：测国内镜像，够快就从镜像下载官方安装包，核对包名、发布者和微软商店签名后，**不用管理员权限**解压到 `%LOCALAPPDATA%\Programs\Codex`，再核对主程序的 OpenAI 签名，建开始菜单和桌面快捷方式「Codex」。镜像太慢或核对没通过，就改从微软商店安装（商品 ID `9PLM9XGG6VKS`，这条要点一次管理员确认）。
+   - Windows：开头弹一次系统确认框（「你要允许此应用对你的设备进行更改吗？」点「是」），只用来安装 Codex；然后测国内镜像，够快就从镜像下载官方安装包，核对包名、发布者和微软商店签名后由那个有管理员权限的进程安装。镜像太慢或核对没通过，就改从微软商店安装（商品 ID `9PLM9XGG6VKS`）。装完一律再查一次有没有真的装上（winget 没装上也会报成功）。
 2. **登录智谱**：用系统自带的浏览器内核开一个登录窗口（Mac 是 Safari 内核，Windows 是 Edge 的独立临时窗口，不碰你自己的浏览器数据）。
 3. **自动创建 API Key**：你扫码登录后，脚本在这个窗口里调用智谱控制台自己的「新建 API Key」接口，和你手动点按钮走的是同一个接口。完整的 Key 只在创建时返回一次，脚本直接接住，不显示、不进剪贴板。
 4. **测试模型**：先试智谱永久免费的 `glm-4.5-flash`，不可用就换 `glm-4.7-flash`。
@@ -59,7 +59,7 @@
 
 - 免费模型能力有限，适合简单任务。想用更强的模型，在[智谱开放平台](https://bigmodel.cn)充值后，把 `config.toml` 里的 `model` 改成付费模型即可。
 - 「新建 API Key」用的是智谱控制台的内部接口，不是公开 API，智谱改版后可能失效，失效时会自动改用手动方式。
-- Windows 上的 Codex（实测 26.1021.3705.0）自带一个系统服务（`CodexSandboxService`），正常安装（双击、微软商店）都要管理员确认。所以脚本默认解压到用户目录、不装这个服务。代价：不会自动更新（重新运行这行命令会装最新版）；Codex 执行命令时用不需要管理员的沙箱模式。卸载：删掉 `%LOCALAPPDATA%\Programs\Codex` 和两个快捷方式。
+- Windows 上的 Codex（实测 26.1021.3705.0）自带一个系统服务（`CodexSandboxService`），Codex 跑命令时的沙盒靠它，Windows 规定安装它要管理员确认，所以要点一次「是」。这一下省不掉：不装成正式的包，沙盒每跑一条命令都要管理员确认，而且永远收不到新版（实测和 Codex 源码都证实）。装好以后跑命令、更新都不用再确认。当前账号不是管理员时，脚本会说明原因并停下。
 - Codex 的窗口标题叫「ChatGPT」（OpenAI 把 Codex 并进了 ChatGPT 桌面版），就是它。
 - 本项目与 OpenAI、智谱均无关联。
 
@@ -113,7 +113,7 @@ This repo is the source. The `public/codex*.sh` and `public/codex*.ps1` files on
 
 1. **Checks the system and races download sources**: skips the download if Codex is already installed; otherwise measures the sources and starts downloading in the background while you scan, resuming interrupted downloads.
    - Mac: on Apple silicon, races the China mirror against OpenAI's official source and uses the mirror unless it is more than 30% slower than the fastest; Intel Macs use the mirror. Installs only after confirming OpenAI's signature (Team ID `2DC432GLL2`).
-   - Windows: measures the China mirror; if it is fast enough, downloads the official package from it, checks the package name, publisher and Microsoft Store signature, then unpacks it **without administrator rights** into `%LOCALAPPDATA%\Programs\Codex`, checks OpenAI's signature on the main program, and adds "Codex" shortcuts to the Start menu and desktop. If the mirror is too slow or a check fails, installs from the Microsoft Store (product ID `9PLM9XGG6VKS`; this route needs one administrator confirmation).
+   - Windows: shows one system confirmation at the start ("Do you want to allow this app to make changes to your device?" → Yes), used only to install Codex. Then measures the China mirror; if it is fast enough, downloads the official package from it, checks the package name, publisher and Microsoft Store signature, and the elevated process installs it. If the mirror is too slow or a check fails, installs from the Microsoft Store (product ID `9PLM9XGG6VKS`). Afterwards it always checks that the package really is installed (winget reports success even when nothing was installed).
 2. **Opens a Zhipu login window** using the browser engine built into the system: Safari's engine on Mac, and a separate temporary Edge window on Windows that never touches your own browser data.
 3. **Creates an API key automatically**: after you log in, the script calls the Zhipu console's own "create API key" endpoint inside that window, the same request the button sends. The full key is returned only once, at creation; the script takes it directly, never showing it or putting it on the clipboard.
 4. **Tests a model**: tries Zhipu's permanently free `glm-4.5-flash`, then `glm-4.7-flash`.
@@ -128,7 +128,7 @@ The login window waits up to 60 minutes and refreshes the QR code by itself; if 
 
 - The free models are limited and suit simple tasks. For stronger models, top up on the [Zhipu platform](https://bigmodel.cn) and set `model` in `config.toml` to a paid model.
 - Key creation uses an internal Zhipu console endpoint, not a public API. It may break after a Zhipu redesign, in which case the script falls back to the manual steps.
-- Codex for Windows (verified on 26.1021.3705.0) ships a system service (`CodexSandboxService`), so every normal install (double-click, Microsoft Store) asks for administrator confirmation. The script therefore unpacks it into the user's folder by default, without the service. Trade-offs: no automatic updates (rerun the command to get the latest version), and Codex runs commands in its non-administrator sandbox mode. To uninstall, delete `%LOCALAPPDATA%\Programs\Codex` and the two shortcuts.
+- Codex for Windows (verified on 26.1021.3705.0) ships a system service (`CodexSandboxService`) that its command sandbox relies on, and Windows requires administrator confirmation to install it, hence the one "Yes". It cannot be avoided: without a properly installed package, the sandbox asks for administrator confirmation on every command and the app never receives updates (verified on a PC and in the Codex source). Once installed, running commands and updating need no further confirmation. If the current account is not an administrator, the script explains why and stops.
 - The Codex window is titled "ChatGPT" (OpenAI merged Codex into the ChatGPT desktop app); that is it.
 - This project is not affiliated with OpenAI or Zhipu.
 

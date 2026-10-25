@@ -2,7 +2,8 @@
 # 用法（PowerShell）：irm https://humanslive.ai/codex.ps1 | iex
 # 只做这几件事：下载并核对官方 Codex 安装包（国内镜像，不行就用微软商店）、打开智谱登录窗口、新建一个 API Key、
 # 写 %USERPROFILE%\.codex 下的配置、打开 Codex。和 Mac 版一样：先扫码，Codex 同时在后台下载。
-# 兼容 Windows 自带的 PowerShell 5.1；不需要管理员权限：核对过 OpenAI 签名的安装包直接解压到用户自己的目录，不装系统服务。
+# 兼容 Windows 自带的 PowerShell 5.1。Codex 带一个系统服务（跑命令时的沙盒靠它），Windows 规定装它要管理员确认：
+# 开头弹一次系统确认框，只用来安装 Codex；其余步骤都用用户自己的身份。
 # 每次运行都写日志到 %LOCALAPPDATA%\HumansLive\logs，出错时把这个文件发给我们就能查；日志里不写 Key。
 
 $ErrorActionPreference = 'Continue'   # codex.exe 会往 stderr 写警告，Stop 会把它当成错误中断
@@ -13,7 +14,6 @@ $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USER
 $CodexStoreId = '9PLM9XGG6VKS'
 $CodexPackageName = 'OpenAI.Codex'
 $CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # 微软商店里 OpenAI.Codex 的发布者，用来核对镜像下载的安装包
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Codex'   # 免管理员安装的位置（和 VS Code、Cursor 的用户版装在同一类目录）
 $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPage = 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys'
@@ -283,29 +283,52 @@ function Select-Source {
 }
 
 # ---------- 安装 Codex ----------
-# Codex 的安装包带一个系统服务，按正常方式安装（双击、商店、Add-AppxPackage）都要管理员权限。
-# 所以默认不「安装」它：核对是 OpenAI 官方原版后，解压到 %LOCALAPPDATA%\Programs\Codex，建开始菜单和桌面快捷方式。
-# 代价：不会自动更新（重新运行这行命令会装最新版），也没有那个系统服务（Codex 的命令沙箱用不需要管理员的模式）。
-# 以前从微软商店装过的，直接用商店版。
+# Codex 的安装包带一个系统服务（CodexSandboxService）：Codex 跑命令时的沙盒靠它，有了它以后跑命令不用再要管理员权限，
+# 新版也由 Codex 自己或微软商店推送。Windows 规定装它要管理员确认（双击安装、微软商店、Add-AppxPackage 都一样）。
+# 不能绕：不装成正式的包，沙盒每跑一条命令都要管理员确认，而且永远收不到新版（实测和 Codex 源码都证实）。
+# 所以开头就弹一次系统确认框，起一个有管理员权限的小进程在后台等着，下载、核对完以后由它来装。
+# 用户点「是」、扫码，就可以走开了。其余步骤（下载、登录、写配置）都用用户自己的身份。
 function Get-CodexPackage { Get-AppxPackage -Name $CodexPackageName -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1 }
 function Get-Codex {
   $pkg = Get-CodexPackage
-  if ($pkg) { return @{ Kind = 'store'; Version = "$($pkg.Version)"; Package = $pkg; Cli = Join-Path $pkg.InstallLocation 'app\resources\codex.exe' } }
-  $exe = Join-Path $InstallDir 'app\ChatGPT.exe'
-  if (Test-Path $exe) {
-    $version = try { ([xml][IO.File]::ReadAllText((Join-Path $InstallDir 'AppxManifest.xml'))).Package.Identity.Version } catch { '?' }
-    return @{ Kind = 'portable'; Version = $version; Exe = $exe; Cli = Join-Path $InstallDir 'app\resources\codex.exe' }
-  }
-  $null
+  if ($pkg) { @{ Version = "$($pkg.Version)"; Package = $pkg; Cli = Join-Path $pkg.InstallLocation 'app\resources\codex.exe' } }
 }
 function Open-Codex($codex) {
-  if ($codex.Kind -eq 'store') {
-    $appId = (Get-AppxPackageManifest $codex.Package).Package.Applications.Application.Id | Select-Object -First 1
-    Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
-  } else { Start-Process $codex.Exe }
+  $appId = (Get-AppxPackageManifest $codex.Package).Package.Applications.Application.Id | Select-Object -First 1
+  Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
+}
+function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+# 当前账号在不在管理员组。窗口没提权时这个组标成「仅用于拒绝」，但 SID 还在，所以看 SID。
+# 不在的话，确认框会要管理员的密码，而且包会装到那个管理员名下，本人还是用不了
+function Test-AdminMember { [bool]((whoami /groups) -match 'S-1-5-32-544') }
+
+# 开头弹一次确认框，起一个有管理员权限的小进程，等主进程写好 install.go（里面是核对过的安装包路径）再安装，
+# 结果写进 install.result。主进程没了它也退出。用户点「否」时 Start-Process 会抛「操作已被用户取消」，脚本当场就知道
+$Script:Helper = $null
+function Start-InstallHelper {
+  if (Test-Elevated) { Log 'already elevated, no helper needed'; return }
+  $go = Join-Path $WorkDir 'install.go'; $res = Join-Path $WorkDir 'install.result'
+  $code = @"
+`$go = '$go'; `$res = '$res'
+while (-not (Test-Path `$go)) { if (-not (Get-Process -Id $PID -ErrorAction SilentlyContinue)) { exit }; Start-Sleep -Milliseconds 500 }
+`$r = try { Add-AppxPackage -Path ([IO.File]::ReadAllText(`$go).Trim()) -ErrorAction Stop; 'OK' } catch { 'ERROR:' + `$_.Exception.Message }
+[IO.File]::WriteAllText(`$res, `$r)
+"@
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+  Todo '马上会弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
+  Info 'Codex 带一个系统组件（跑命令时的安全沙盒），Windows 规定安装它要你确认一次，只用来装 Codex'
+  try {
+    $Script:Helper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    $null = $Script:Helper.Handle
+    Log "install helper started pid=$($Script:Helper.Id)"
+    Ok '已确认，Codex 下载完会自动安装'
+  } catch {
+    Log "install helper declined: $($_.Exception.Message)"
+    Fail '没有点「是」，Codex 装不上。重新运行这行命令，弹出确认框时点「是」就行（已经下载的部分会接着下）。'
+  }
 }
 
-# 镜像下载的安装包：核对是不是微软商店里那份 OpenAI 官方的 Codex（包名、发布者、签名），解压，再核对程序本身的签名
+# 镜像下载的安装包：核对是不是微软商店里那份 OpenAI 官方的 Codex（包名、发布者、签名），再交给有管理员权限的小进程安装
 function Install-FromMsix($file) {
   $job = Start-Job -ArgumentList $file -ScriptBlock {
     param($f)
@@ -331,39 +354,22 @@ function Install-FromMsix($file) {
     return $false
   }
   Ok "已确认是 OpenAI 官方原版 $version（微软商店签名）"
-  # 解压到旁边的临时目录：安装包里的文件名是网址编码的（%40 = @），解压后改回来；核对主程序签名后再换上
-  $job = Start-Job -ArgumentList $file, $InstallDir -ScriptBlock {
-    param($f, $dir)
-    try {
-      $tmp = "$dir.new"
-      Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-      Add-Type -AssemblyName System.IO.Compression.FileSystem
-      [IO.Compression.ZipFile]::ExtractToDirectory($f, $tmp)
-      Get-ChildItem $tmp -Recurse -Filter '*%*' | Sort-Object { $_.FullName.Length } -Descending |
-        ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ([Uri]::UnescapeDataString($_.Name)) -ErrorAction Stop }
-      $sig = Get-AuthenticodeSignature (Join-Path $tmp 'app\ChatGPT.exe')
-      if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike '*OpenAI*') { Remove-Item $tmp -Recurse -Force; return "ERROR:主程序签名不对（$($sig.Status) $($sig.SignerCertificate.Subject)）" }
-      if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction Stop }
-      Move-Item $tmp $dir -ErrorAction Stop
-      'OK'
-    } catch { "ERROR:$($_.Exception.Message)" }
-  }
   $since = Get-Date
-  while ($job.State -eq 'Running') { Wait-Tick 0.3 '安装 Codex' $since }
+  if (Test-Elevated) {
+    $job = Start-Job -ArgumentList $file -ScriptBlock { param($f) try { Add-AppxPackage -Path $f -ErrorAction Stop; 'OK' } catch { "ERROR:$($_.Exception.Message)" } }
+    while ($job.State -eq 'Running') { Wait-Tick 0.3 '安装 Codex' $since }
+    $result = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+  } elseif ($Script:Helper -and -not $Script:Helper.HasExited) {
+    $res = Join-Path $WorkDir 'install.result'
+    [IO.File]::WriteAllText((Join-Path $WorkDir 'install.go'), $file)
+    while (-not (Test-Path $res) -and -not $Script:Helper.HasExited) { Wait-Tick 0.3 '安装 Codex' $since }
+    Start-Sleep -Milliseconds 300
+    $result = if (Test-Path $res) { [IO.File]::ReadAllText($res).Trim() } else { 'ERROR:安装进程意外退出' }
+  } else { $result = 'ERROR:没有管理员权限' }
   Clear-Line
-  $result = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
-  Remove-Job $job -Force -ErrorAction SilentlyContinue
-  Log "unpack: $result"
-  if ("$result" -ne 'OK') { Info "安装没成功（$($result -replace '^ERROR:', '')），改用微软商店"; return $false }
-  # 开始菜单和桌面各放一个快捷方式，名字叫 Codex
-  $shell = New-Object -ComObject WScript.Shell
-  foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
-    try {
-      $lnk = $shell.CreateShortcut((Join-Path $folder 'Codex.lnk'))
-      $lnk.TargetPath = Join-Path $InstallDir 'app\ChatGPT.exe'; $lnk.WorkingDirectory = Join-Path $InstallDir 'app'; $lnk.Description = 'Codex'
-      $lnk.Save(); Log "shortcut: $folder"
-    } catch { Log "shortcut failed: $folder $($_.Exception.Message)" }
-  }
+  Log "install msix: $result"
+  if ("$result" -ne 'OK') { Info "直接安装没成功（$($result -replace '^ERROR:', '')），改用微软商店"; return $false }
   Remove-Item $file, "$file.etag" -Force -ErrorAction SilentlyContinue
   $true
 }
@@ -374,7 +380,7 @@ function Install-FromStore {
     Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
   }
   Info '从微软商店安装（会自动同意商店条款）'
-  Todo '商店版要管理员确认：弹出「你要允许此应用对你的设备进行更改吗？」时，点「是」'
+  Todo '会再弹一次「你要允许此应用对你的设备进行更改吗？」，点「是」'
   $winget = Start-Process winget -PassThru -WindowStyle Hidden -ArgumentList "install --id $CodexStoreId --source msstore --accept-package-agreements --accept-source-agreements --disable-interactivity"
   $since = Get-Date
   while (-not $winget.HasExited) { Wait-Tick 0.3 '从微软商店安装 Codex' $since }
@@ -547,14 +553,18 @@ try {
   $codex = Get-Codex
   $source = $null
   if ($codex) {
-    Log "codex already installed: $($codex.Kind) $($codex.Version)"
+    Log "codex already installed: $($codex.Version)"
     Ok '已经装过 Codex，这次不用下载'
   } else {
     $freeGb = [int]((Get-PSDrive ($env:LOCALAPPDATA.Substring(0, 1))).Free / 1GB)
     if ($freeGb -lt 4) { Fail "硬盘空间不够：装 Codex 需要约 4GB，现在只剩 ${freeGb}GB。清理一些文件后，重新运行这行命令。" }
     Ok "硬盘可用 $freeGb GB，够装 Codex"
+    if (-not (Test-AdminMember)) {
+      Log 'not an administrator account'
+      Fail '这台电脑现在登录的账号不是管理员。Codex 带一个系统组件，Windows 规定要管理员账号才能装。换管理员账号登录后，重新运行这行命令。'
+    }
     $source = Select-Source
-    if ($source) { Start-Download $source.Url $source.Name $source.File }
+    if ($source) { Start-Download $source.Url $source.Name $source.File; Start-InstallHelper }
   }
 
   # ---------- [1/3] 智谱账号（唯一需要用户动手的一步） ----------
@@ -652,7 +662,7 @@ try {
       Start-Process "ms-windows-store://pdp/?ProductId=$CodexStoreId" -ErrorAction SilentlyContinue
       Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
     }
-    Log "codex installed: $($codex.Kind) $($codex.Version)"
+    Log "codex installed: $($codex.Version) service=$((Get-Service "CodexSandboxService.$($codex.Package.PackageFamilyName -replace '_[^_]+$', '')" -ErrorAction SilentlyContinue).Status)"
     Ok "Codex $($codex.Version) 已装好"
   }
 
@@ -678,7 +688,7 @@ try {
   }
   if (-not $env:CODEX_SETUP_NO_OPEN) { Open-Codex $codex }
   Finish "Codex 已经打开，用的是智谱免费模型 $Model"
-  Info '以后从开始菜单或桌面上的「Codex」打开（窗口标题叫 ChatGPT，就是它）'
+  Info '以后从开始菜单打开「ChatGPT」：OpenAI 把 Codex 并进了 ChatGPT 桌面版，就是它'
 
   # ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
   # HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
