@@ -18,7 +18,7 @@ $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPage = 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-$FreeModels = @('glm-4.5-flash', 'glm-4.7-flash')
+$FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
 $DebugPort = 9333
 $CacheDir = if ($env:CODEX_SETUP_CACHE_DIR) { $env:CODEX_SETUP_CACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'HumansLive' }
 $WorkDir = Join-Path $env:TEMP ('codex-setup-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -45,8 +45,8 @@ $Fancy = [bool]$env:WT_SESSION -or $ConsoleClass -eq 'PseudoConsoleWindow'
 $Check = if ($Fancy) { '✓' } else { '√' }
 $Cross = if ($Fancy) { '✗' } else { '×' }
 if ($Live) {
-  $R = "$E[0m"; $Bold = "$E[1m"; $Dim = "$E[2m"; $Blue = "$E[38;5;33m"; $Head = "$E[38;5;153m"; $Deep = "$E[38;5;25m"; $Red = "$E[31m"
-} else { $R = $Bold = $Dim = $Blue = $Head = $Deep = $Red = '' }
+  $R = "$E[0m"; $Bold = "$E[1m"; $Dim = "$E[2m"; $Blue = "$E[38;5;33m"; $Head = "$E[38;5;153m"; $Deep = "$E[38;5;25m"; $Red = "$E[31m"; $Link = "$E[4;38;5;33m"
+} else { $R = $Bold = $Dim = $Blue = $Head = $Deep = $Red = $Link = '' }
 $Spinner = if ($Fancy) { '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'.ToCharArray() } else { '|/-\'.ToCharArray() }
 $BarOn = if ($Fancy) { '━' } else { '=' }
 $BarOff = if ($Fancy) { '─' } else { '-' }
@@ -142,6 +142,26 @@ function Show-Error($text) {
   Write-Host "     ${Dim}需要帮助：把这个日志文件发到社群 https://humanslive.ai/community$R"
   Write-Host ''
   Start-Process explorer.exe "/select,`"$LogFile`"" -ErrorAction SilentlyContinue
+}
+# 拿到 Key 后告诉用户它在哪、谁能拿到
+function Show-KeyNote {
+  $lock = if ($Fancy) { '🔒 ' } else { '' }
+  Write-Host "       $Blue$lock$R${Bold}安全说明$R"
+  Info '这个 Key 是用你自己的智谱账号建的，只保存在你的电脑上，绝对安全'
+  Info '随时可以在智谱控制台删掉（名字以 Codex- 开头）'
+}
+# 装好以后：怎么打开、免费模型的限速和充值、更强的模型
+function Show-NextSteps($configShown) {
+  Section '以后怎么打开' ''
+  Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R"
+  Section '关于免费模型' ''
+  Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
+  Write-Host "     ${Dim}不想被限速：在智谱充值，再把$R $Bold$configShown$R ${Dim}里的 model 换成付费模型$R"
+  Write-Host "     ${Link}https://bigmodel.cn/finance/pay$R"
+  Section '想用更强的模型' '我们帮你开通'
+  Write-Host "     ${Bold}OpenAI 官方 GPT 模型$R"
+  Write-Host "     ${Bold}Claude 模型$R"
+  Write-Host "     $Blue→$R 来社群找我们：${Link}https://humanslive.ai/community$R"
 }
 function Fail($text) {
   Log "FAIL $text"
@@ -315,8 +335,9 @@ while (-not (Test-Path `$go)) { if (-not (Get-Process -Id $PID -ErrorAction Sile
 [IO.File]::WriteAllText(`$res, `$r)
 "@
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+  Section '安装授权' '只用来装 Codex'
   Todo '马上会弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
-  Info 'Codex 带一个系统组件（跑命令时的安全沙盒），Windows 规定安装它要你确认一次，只用来装 Codex'
+  Info 'Codex 带一个安全沙盒组件，Windows 规定装它要你确认一次'
   try {
     $Script:Helper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
     $null = $Script:Helper.Handle
@@ -542,7 +563,7 @@ function Find-FreeModel($key) {
 # ================= 开始 =================
 $Steps = 3
 try {
-  Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花钱'
+  Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱'
 
   # ---------- 准备：系统检测、线路测速，然后在后台开始下载 ----------
   Section '系统检测' ''
@@ -595,6 +616,7 @@ try {
         Log 'login outcome: key created'
         $ZhipuApiKey = $outcome
         Ok '已登录，自动创建好 API Key'
+        Show-KeyNote
       } else {
         # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
         Log "login outcome: $outcome"
@@ -606,6 +628,7 @@ try {
         $ZhipuApiKey = Get-ZhipuKeyFromClipboard
         if (-not $ZhipuApiKey) { Fail '15 分钟内没有读到 API Key。' }
         Ok '已读到 API Key'
+        Show-KeyNote
       }
     }
     if ($ZhipuApiKey -notmatch $ZhipuKeyPattern) { Fail 'API Key 格式不对。' }
@@ -636,7 +659,8 @@ try {
     if (Test-Path $path) { Copy-Item $path ($path + $backupSuffix); $backedUp = $true }
     [IO.File]::WriteAllText($path, $content, $utf8NoBom)
   }
-  Ok "已写入 $($configPath -replace [regex]::Escape($env:USERPROFILE), '~')"
+  Log "config written: $configPath"
+  Ok '已把 Key 和模型写进 Codex 的配置'
   if ($backedUp) { Info "原来的配置已备份为 *$backupSuffix" }
 
 
@@ -687,8 +711,8 @@ try {
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
   }
   if (-not $env:CODEX_SETUP_NO_OPEN) { Open-Codex $codex }
-  Finish "Codex 已经打开，用的是智谱免费模型 $Model"
-  Info '以后从开始菜单打开「ChatGPT」：OpenAI 把 Codex 并进了 ChatGPT 桌面版，就是它'
+  Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"
+  Show-NextSteps $configPath
 
   # ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
   # HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。

@@ -16,7 +16,7 @@ CODEX_BUNDLE_ID="com.openai.codex"
 ZHIPU_BASE_URL="https://open.bigmodel.cn/api/v1"
 ZHIPU_KEY_PAGE="https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-FREE_MODELS="glm-4.5-flash glm-4.7-flash"
+FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
 WORK_DIR="$(mktemp -d -t codex-setup)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 cat > "$WORK_DIR/fx.pl" <<'FX'
@@ -148,10 +148,10 @@ FX
 # 只有一个强调色（蓝），次要信息用灰色，红色只用于出错；不是终端（被重定向）或设了 NO_COLOR 时不上色、不画动画。
 # 所有提示都写到 stderr：标准输出留给 $(...) 取值用。
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_DIM=$'\033[2m' C_BLUE=$'\033[38;5;33m' C_RED=$'\033[31m'
+  C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_DIM=$'\033[2m' C_BLUE=$'\033[38;5;33m' C_RED=$'\033[31m' C_LINK=$'\033[4;38;5;33m'
   LIVE=1
 else
-  C_RESET="" C_BOLD="" C_DIM="" C_BLUE="" C_RED="" LIVE=""
+  C_RESET="" C_BOLD="" C_DIM="" C_BLUE="" C_RED="" C_LINK="" LIVE=""
 fi
 STEP=0
 # 路径里的家目录显示成 ~，短一些
@@ -182,6 +182,25 @@ done_line() {
   if [ -n "$LIVE" ]; then perl "$WORK_DIR/fx.pl" decode "$C_BLUE$C_BOLD" "✓ ALL SYSTEMS GO · 全部完成"
   else printf '  ✓ ALL SYSTEMS GO · 全部完成\n' >&2; fi
   printf '     %s用时 %s%s\n     %s\n' "$C_DIM" "$took" "$C_RESET" "$*" >&2
+}
+# 拿到 Key 后告诉用户它在哪、谁能拿到
+key_note() {
+  printf '       %s🔒%s %s安全说明%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+  info "这个 Key 是用你自己的智谱账号建的，只保存在你的电脑上，绝对安全"
+  info "随时可以在智谱控制台删掉（名字以 Codex- 开头）"
+}
+# 装好以后：怎么打开、免费模型的限速和充值、更强的模型。用法：next_steps <App 路径> <配置文件>
+next_steps() {
+  local app_name; app_name=$(basename "$1" .app)
+  section "以后怎么打开"
+  printf '     「启动台」或「应用程序」里的「%s」就是 Codex  %sOpenAI 把 Codex 并进了 ChatGPT 桌面版%s\n' "$app_name" "$C_DIM" "$C_RESET" >&2
+  section "关于免费模型"
+  printf '     不扣费，用得太频繁会被限速，等一会儿就恢复\n' >&2
+  printf '     %s不想被限速：在智谱充值，再把%s %s%s%s %s里的 model 换成付费模型%s\n' "$C_DIM" "$C_RESET" "$C_BOLD" "$(short_path "$2")" "$C_RESET" "$C_DIM" "$C_RESET" >&2
+  printf '     %shttps://bigmodel.cn/finance/pay%s\n' "$C_LINK" "$C_RESET" >&2
+  section "想用更强的模型" "我们帮你开通"
+  printf '     %sOpenAI 官方 GPT 模型%s\n     %sClaude 模型%s\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+  printf '     %s→%s 来社群找我们：%shttps://humanslive.ai/community%s\n' "$C_BLUE" "$C_RESET" "$C_LINK" "$C_RESET" >&2
 }
 # 出错时：说清楚怎么办，指出日志文件并在访达里选中它，方便用户发给我们
 show_error() {
@@ -258,7 +277,7 @@ draw_progress() {
 
 [ "$(uname -s)" = "Darwin" ] || fail "这个脚本只支持 Mac。Windows 请用 PowerShell 版本。"
 STEPS=3
-header "CODEX INSTALLER" "Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花钱"
+header "CODEX INSTALLER" "Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱"
 
 APP_DIR="${CODEX_SETUP_APP_DIR:-/Applications}"
 CACHE_DIR="${CODEX_SETUP_CACHE_DIR:-$HOME/Library/Caches/HumansLive}"
@@ -564,6 +583,7 @@ else
       log "login outcome: key created"
       ZHIPU_API_KEY="$login_outcome"
       ok "已登录，自动创建好 API Key"
+      key_note
     else
       # 只有智谱接口出问题（比如改版）才退到手动复制；窗口被关或没扫码，重新运行再扫一次就行
       log "login outcome: ${login_outcome:-empty}"
@@ -574,6 +594,7 @@ else
       esac
       ZHIPU_API_KEY=$(zhipu_key_by_clipboard) || fail "15 分钟内没有读到 API Key。"
       ok "已读到 API Key"
+      key_note
     fi
   fi
   [[ "$ZHIPU_API_KEY" =~ $ZHIPU_KEY_PATTERN ]] || fail "API Key 格式不对。"
@@ -606,7 +627,8 @@ for pair in "config.toml:$CONFIG" "auth.json:$AUTH"; do
   mv "$new" "$dest"
 done
 chmod 600 "$AUTH"
-ok "已写入 $(short_path "$CONFIG")"
+log "config written: $CONFIG"
+ok "已把 Key 和模型写进 Codex 的配置"
 [ -z "$BACKED_UP" ] || info "原来的配置已备份为 *${BACKUP_SUFFIX}"
 
 
@@ -659,6 +681,7 @@ if [ -x "$CODEX_CLI" ]; then
 fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
 done_line "Codex 已经打开，用的是智谱免费模型 ${C_BOLD}${MODEL}${C_RESET}"
+next_steps "$CODEX_APP" "$CONFIG"
 
 # ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
 # HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
