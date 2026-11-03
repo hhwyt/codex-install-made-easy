@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，成功后在 humanslive.ai/tools 点亮这一站。
+# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，再去掉国产模型版留下的智谱配置。
 #   用法：curl -fsSL https://humanslive.ai/codex-official.sh | bash
 # 官方命令：curl -fsSL https://chatgpt.com/codex/install.sh | sh
 
@@ -68,11 +68,6 @@ info "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
 printf '\n' >&2
 curl -fsSL https://chatgpt.com/codex/install.sh | sh || fail "官方安装命令没有成功，看上面的英文提示；网络问题的话，确认能打开 chatgpt.com 后重试。"
 
-# HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
-if [ -n "${HL_TOKEN:-}" ]; then
-  curl -fsS --max-time 6 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"${HL_TOKEN}\"}" \
-    https://humanslive.ai/api/tools/progress/claim >/dev/null 2>&1 || true
-fi
 done_line "Codex 已装好，接下来："
 todo "打开一个新的终端窗口，进入项目文件夹，输入 codex 回车"
 todo "选 Sign in with ChatGPT，用你的 ChatGPT 账号登录"

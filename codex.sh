@@ -593,6 +593,18 @@ BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
   fi
   printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL"
 } > "$WORK_DIR/config.toml"
+# Codex 界面默认跟系统语言走；用户没自己选过语言的话，设成简体中文（Codex 设置里的「语言」，存在 [desktop] 下）
+if ! grep -Eq '^[[:space:]]*localeOverride[[:space:]]*=' "$WORK_DIR/config.toml"; then
+  if grep -q '^\[desktop\]' "$WORK_DIR/config.toml"; then
+    # 跟着 [desktop] 那一行的换行写（Windows 编辑过的文件是 CRLF），不混用换行
+    awk '{ print } /^\[desktop\]/ && !done { eol = ($0 ~ /\r$/) ? "\r" : ""; print "localeOverride = \"zh-CN\"" eol; done = 1 }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
+    mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml"
+  elif grep -q $'\r$' "$WORK_DIR/config.toml"; then
+    printf '\r\n[desktop]\r\nlocaleOverride = "zh-CN"\r\n' >> "$WORK_DIR/config.toml"
+  else
+    printf '\n[desktop]\nlocaleOverride = "zh-CN"\n' >> "$WORK_DIR/config.toml"
+  fi
+fi
 ( umask 077; printf '{"OPENAI_API_KEY":"%s"}\n' "$ZHIPU_API_KEY" > "$WORK_DIR/auth.json" )
 BACKED_UP=""
 for pair in "config.toml:$CONFIG" "auth.json:$AUTH"; do
@@ -657,13 +669,6 @@ fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
 done_line "Codex 已经打开，用的是智谱免费模型 ${C_BOLD}${MODEL}${C_RESET}"
 next_steps "$CODEX_APP" "$CONFIG"
-
-# ---------- 点亮 humanslive.ai/tools 上的这个工具 ----------
-# HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
-if [ -n "${HL_TOKEN:-}" ]; then
-  curl -fsS --max-time 6 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"${HL_TOKEN}\"}" \
-    https://humanslive.ai/api/tools/progress/claim >/dev/null 2>&1 || true
-fi
 
 # ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
 # 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。

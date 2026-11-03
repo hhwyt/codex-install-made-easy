@@ -1,4 +1,4 @@
-# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，成功后在 humanslive.ai/tools 点亮这一站。
+# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，再去掉国产模型版留下的智谱配置。
 #   用法：irm https://humanslive.ai/codex-official.ps1 | iex
 # 官方命令：irm https://chatgpt.com/codex/install.ps1 | iex
 # 源码：私有仓库 codex-install-made-easy（网站 public/ 下是副本，改动两边同步）。
@@ -46,7 +46,6 @@ try { irm https://chatgpt.com/codex/install.ps1 | iex } catch {
   Write-Host '     需要帮助：截图发到社群 https://humanslive.ai/community' -ForegroundColor DarkGray
 }
 
-# HL_TOKEN 来自安装页上复制的命令（网站签名，7 天有效）；没有就跳过，请求失败也不影响安装结果。
 if ($installed) {
   Say '检查旧配置'
   $cleaned = $false
@@ -74,9 +73,6 @@ if ($installed) {
     $cleaned = $true; Ok '已移走国产模型版的智谱 Key'; Info "备份为 $authPath$backupSuffix"
   }
 
-  if ($env:HL_TOKEN) {
-    try { Invoke-RestMethod -TimeoutSec 6 -Method Post -ContentType 'application/json' -Body (@{ token = $env:HL_TOKEN } | ConvertTo-Json) 'https://humanslive.ai/api/tools/progress/claim' | Out-Null } catch { }
-  }
   if (-not $cleaned) { Ok '没有要处理的旧配置' }
   Finish 'Codex 已装好，接下来：'
   Todo '打开一个新的终端窗口，进入项目文件夹，输入 codex 回车'
