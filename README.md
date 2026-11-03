@@ -69,7 +69,7 @@
 
 ### 许可
 
-私有项目，未开源。
+[MIT](LICENSE)。
 
 ---
 
@@ -138,4 +138,4 @@ On Windows, run `windows\build.bat`. It builds `windows\CodexSetup.exe` with the
 
 ### License
 
-Private project; not open source.
+[MIT](LICENSE).
