@@ -1,9 +1,11 @@
-# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，再去掉国产模型版留下的智谱配置。
-#   用法：irm https://humanslive.ai/codex-official.ps1 | iex
-# 官方命令：irm https://chatgpt.com/codex/install.ps1 | iex
-# 源码：私有仓库 codex-install-made-easy（网站 public/ 下是副本，改动两边同步）。
-# ---------- 终端输出 ----------
-# 一个强调色（青蓝），次要信息用灰色，红色只用于出错。√ → × 在中文版和英文版 Windows 的默认字体里都有。
+# Codex official install (HumansLive wrapper): runs OpenAI's official install command, then removes the Zhipu
+# config left by the Chinese-model edition.
+#   Usage: irm https://humanslive.ai/codex-official.ps1 | iex
+# Official command: irm https://chatgpt.com/codex/install.ps1 | iex
+# Source: https://github.com/hhwyt/codex-install-made-easy
+# ---------- Terminal output ----------
+# One accent color (cyan), gray for secondary text, red only for errors. √ → × exist in the default fonts of both
+# Chinese and English Windows.
 $Script:Step = 0
 $Script:Started = Get-Date
 function Get-ConsoleWidth { try { [int]$Host.UI.RawUI.WindowSize.Width } catch { 80 } }
@@ -49,9 +51,9 @@ try { irm https://chatgpt.com/codex/install.ps1 | iex } catch {
 if ($installed) {
   Say '检查旧配置'
   $cleaned = $false
-  # 以前用国产模型版装过：它写的智谱配置会让 Codex 继续走智谱、不认 ChatGPT 登录。
-  # 只删国产模型版写的那几行（model_provider = "zhipu"、model = "glm-…"、[model_providers.zhipu]）
-  # 和只装着智谱 Key 的 auth.json，其余原样保留；改之前先备份。UTF-8 不带 BOM。
+  # A previous Chinese-model install leaves a Zhipu config that keeps Codex on Zhipu and ignores ChatGPT sign-in.
+  # Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", [model_providers.zhipu])
+  # and an auth.json that holds only a Zhipu key; keep everything else and back up first. UTF-8 without BOM.
   $codexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
   $configPath = Join-Path $codexHomeDir 'config.toml'
   $authPath = Join-Path $codexHomeDir 'auth.json'
@@ -78,8 +80,9 @@ if ($installed) {
   Todo '打开一个新的终端窗口，进入项目文件夹，输入 codex 回车'
   Todo '选 Sign in with ChatGPT，用你的 ChatGPT 账号登录'
 
-  # ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
-  # 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+  # ---------- Closing banner: other free HumansLive tools ----------
+  # Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.
+  # If it cannot be fetched, print one URL instead; the install result is unaffected.
   function Show-Banner($source) {
     $text = $null
     try { $text = Invoke-RestMethod -TimeoutSec 6 "https://humanslive.ai/api/install-banner?f=$source&w=$(Get-ConsoleWidth)" } catch { }

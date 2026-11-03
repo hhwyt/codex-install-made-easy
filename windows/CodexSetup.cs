@@ -1,7 +1,8 @@
-// CodexSetup.exe：双击即可运行的 Windows 安装器。它只是一层外壳：用系统自带的 PowerShell
-// 下载并执行 https://humanslive.ai/codex.ps1（和「一行命令」安装的是同一个脚本），所以脚本更新后 exe 不用重发。
-// 没有代码签名：首次运行会弹出「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
-// 编译：在 Windows 上运行同目录的 build.bat（用系统自带的 .NET Framework 编译器，不需要安装任何东西）。
+// CodexSetup.exe: a double-click Windows installer. It is only a thin shell: it uses the built-in PowerShell
+// to download and run https://humanslive.ai/codex.ps1 (the same script as the one-line install), so the exe never
+// needs reissuing when the script changes.
+// It is not code-signed: on first run SmartScreen shows "Windows protected your PC"; click More info -> Run anyway.
+// Build: run build.bat in this folder on Windows (uses the built-in .NET Framework compiler; nothing to install).
 using System;
 using System.Diagnostics;
 using System.Text;
@@ -17,7 +18,7 @@ internal static class CodexSetup
         Console.WriteLine("Codex 一键安装：会安装官方 Codex，并帮你接上智谱免费模型。");
         Console.WriteLine("过程中会弹出智谱登录窗口，用手机微信扫码即可。");
 
-        // 强制 TLS 1.2：老版本 Windows 的 PowerShell 默认可能连不上 https
+        // Force TLS 1.2: PowerShell on older Windows may otherwise fail to connect over HTTPS
         string command =
             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
             "irm " + ScriptUrl + " | iex";
@@ -44,7 +45,7 @@ internal static class CodexSetup
         }
 
         Console.WriteLine();
-        Console.WriteLine(exitCode == 0 ? "安装结束。" : "安装没有完成，请把上面的文字截图发给客服。");
+        Console.WriteLine(exitCode == 0 ? "安装结束。" : "安装没有完成。需要帮助：把上面的文字截图发到社群 https://humanslive.ai/community");
         Console.WriteLine("按回车键关闭这个窗口。");
         Console.ReadLine();
         return exitCode;

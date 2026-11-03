@@ -1,11 +1,13 @@
 #!/bin/bash
-# Codex 一键安装（Mac）：装好官方 Codex App，用微信扫码登录智谱后自动创建 API Key，接上智谱免费模型。
-# 用法：curl -fsSL https://humanslive.ai/codex.sh | bash
-# 只做这几件事：下载并校验官方 Codex、打开智谱登录窗口、新建一个 API Key、写 ~/.codex 下的配置、打开 Codex。
-# 每次运行都写日志到 ~/Library/Logs/HumansLive，出错时把这个文件发给我们就能查；日志里不写 Key。
+# Codex one-command installer (macOS): installs the official Codex app, creates a Zhipu API key after a
+# WeChat QR login, and wires Codex to Zhipu's free model.
+# Usage: curl -fsSL https://humanslive.ai/codex.sh | bash
+# It only: downloads and verifies the official Codex, opens a Zhipu login window, creates one API key,
+# writes the config under ~/.codex, and opens Codex.
+# Every run writes a log to ~/Library/Logs/HumansLive for debugging. Keys are never logged.
 set -euo pipefail
 
-# ---------- 日志：每一步写一行，出错时用户把文件发来就能查 ----------
+# ---------- Log: one line per step, so a user can send us the file when something fails ----------
 LOG_FILE="$HOME/Library/Logs/HumansLive/codex-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "${LOG_FILE%/*}" 2>/dev/null || true
 log() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | sed $'s/\033\\[[0-9;]*m//g' >> "$LOG_FILE" 2>/dev/null || true; }
@@ -15,14 +17,14 @@ OPENAI_TEAM_ID="2DC432GLL2"
 CODEX_BUNDLE_ID="com.openai.codex"
 ZHIPU_BASE_URL="https://open.bigmodel.cn/api/v1"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
+FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
 WORK_DIR="$(mktemp -d -t codex-setup)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 cat > "$WORK_DIR/fx.pl" <<'FX'
-# 终端动效（macOS 自带 perl，不用装东西）。只在真终端里调用；全部输出到 stderr。
-#   rain <宽> <行数> <毫秒>          数字雨，结束后擦掉
-#   decode <颜色> <文字>             乱码逐字解码成文字（只打乱 ASCII，中文原样）
-#   race <数量> {名字 标签 文件 进程号}...   测速赛跑，实时刷新；结束后在 stdout 输出「最快的序号 各条速度…」，都失败时序号是 -1
+# Terminal effects, in the perl that ships with macOS. Only called on a real terminal; all output goes to stderr.
+#   rain <cols> <rows> <ms>          digital rain, erased when done
+#   decode <color> <text>            text decodes out of noise (only ASCII is scrambled; CJK stays as is)
+#   race <n> {name tag file pid}...  live download-speed race; prints "<best index> <speed>..." to stdout, index -1 if all failed
 use strict; use warnings; use utf8;
 use Time::HiRes qw(sleep time);
 binmode STDERR, ':utf8'; binmode STDOUT, ':utf8';
@@ -96,7 +98,7 @@ elsif ($cmd eq 'race') {
   my $cols = $ENV{FX_COLS} || 80;
   my $namew = 0; for (@name) { my $w = width($_); $namew = $w if $w > $namew }
   my $tagw = 0; for (@tag) { my $w = width($_); $tagw = $w if $w > $tagw }
-  # 一行 = 缩进 5 + 标记 2 + 名字 + 2 + 标签 + 2 + 进度条 + 2 + 速度 10 + 「  最快」6，再留 2 列不贴边
+  # One row = indent 5 + mark 2 + name + 2 + tag + 2 + bar + 2 + speed 10 + "fastest" label 6, plus a 2-column margin
   my $barw = $cols - 5 - 2 - $namew - 2 - $tagw - 2 - 2 - 10 - 6 - 2;
   $barw = 24 if $barw > 24;
   $barw = 0 if $barw < 6;
@@ -136,16 +138,17 @@ elsif ($cmd eq 'race') {
   }
   my $best = -1; my $bs = 100 * 1024;
   for my $i (0 .. $n - 1) { if (($speed[$i] // 0) > $bs) { $bs = $speed[$i]; $best = $i } }
-  # 第一条（国内镜像）只要不比最快的慢 30% 以上就用它：对不开代理的用户更稳
+  # Prefer the first source (China mirror) unless it is over 30% slower than the fastest: steadier without a proxy
   $best = 0 if $best > 0 && ($speed[0] // 0) * 1.3 >= $bs;
   $draw->(1, $best);
   print STDOUT join(' ', $best, map { int($_ // 0) } @speed), "\n";
 }
 FX
 
-# ---------- 终端输出 ----------
-# 只有一个强调色（蓝），次要信息用灰色，红色只用于出错；不是终端（被重定向）或设了 NO_COLOR 时不上色、不画动画。
-# 所有提示都写到 stderr：标准输出留给 $(...) 取值用。
+# ---------- Terminal output ----------
+# One accent color (blue), gray for secondary text, red only for errors. No color or animation when stderr is
+# not a terminal or NO_COLOR is set.
+# All messages go to stderr; stdout is reserved for $(...) captures.
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_DIM=$'\033[2m' C_BLUE=$'\033[38;5;33m' C_RED=$'\033[31m' C_LINK=$'\033[4;38;5;33m'
   LIVE=1
@@ -153,10 +156,10 @@ else
   C_RESET="" C_BOLD="" C_DIM="" C_BLUE="" C_RED="" C_LINK="" LIVE=""
 fi
 STEP=0
-# 路径里的家目录显示成 ~，短一些
+# Show the home directory as ~
 short_path() { case "$1" in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
 term_cols() { local cols; cols=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); [ "${cols:-0}" -gt 0 ] 2>/dev/null && echo "$cols" || echo 80; }
-# 开场：一小段数字雨，标题从乱码解码出来（不到 1.5 秒）
+# Intro: a short digital rain, then the title decodes out of noise (under 1.5 s)
 header() {
   local cols; cols=$(term_cols)
   printf '\n' >&2
@@ -168,7 +171,7 @@ header() {
   fi
   printf '  %s%s%s\n' "$C_DIM" "$2" "$C_RESET" >&2
 }
-# 不编号的准备阶段（系统检测、线路测速）
+# Unnumbered preparation sections (system check, source race)
 section() { log "== $1 ${2:-}"; printf '\n  %s▸%s %s%s%s  %s%s%s\n' "$C_BLUE$C_BOLD" "$C_RESET" "$C_BOLD" "$1" "$C_RESET" "$C_DIM" "${2:-}" "$C_RESET" >&2; }
 say()  { STEP=$((STEP + 1)); log "[$STEP/$STEPS] $*"; printf '\n  %s[%d/%d]%s %s%s%s\n' "$C_BLUE$C_BOLD" "$STEP" "$STEPS" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
 info() { log "   $*"; printf '       %s%s%s\n' "$C_DIM" "$*" "$C_RESET" >&2; }
@@ -182,13 +185,13 @@ done_line() {
   else printf '  ✓ ALL SYSTEMS GO · 全部完成\n' >&2; fi
   printf '     %s用时 %s%s\n     %s\n' "$C_DIM" "$took" "$C_RESET" "$*" >&2
 }
-# 拿到 Key 后告诉用户它在哪、谁能拿到
+# After the key is created, tell the user where it lives and who can see it
 key_note() {
   printf '       %s🔒%s %s安全说明%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
   info "这个 Key 是用你自己的智谱账号建的，只保存在你的电脑上，绝对安全"
   info "随时可以在智谱控制台删掉（名字以 Codex- 开头）"
 }
-# 装好以后：怎么打开、免费模型的限速和充值、更强的模型。用法：next_steps <App 路径> <配置文件>
+# After install: how to open Codex, free-model rate limits and top-ups, stronger models. Usage: next_steps <app> <config>
 next_steps() {
   local app_name; app_name=$(basename "$1" .app)
   section "以后怎么打开"
@@ -201,7 +204,7 @@ next_steps() {
   printf '     %sOpenAI 官方 GPT 模型%s\n     %sClaude 模型%s\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
   printf '     %s→%s 来社群找我们：%shttps://humanslive.ai/community%s\n' "$C_BLUE" "$C_RESET" "$C_LINK" "$C_RESET" >&2
 }
-# 出错时：说清楚怎么办，指出日志文件并在访达里选中它，方便用户发给我们
+# On failure: say what to do, show the log path and reveal the file in Finder so it is easy to send
 show_error() {
   [ -z "$LIVE" ] || printf '\r\033[K' >&2
   printf '\n  %s✗ 出错了%s\n     %s\n     %s日志：%s%s\n     %s需要帮助：把这个日志文件发到社群 https://humanslive.ai/community%s\n\n' \
@@ -215,13 +218,13 @@ fail() {
   show_error "$*"
   exit 1
 }
-# 意料之外的错误（set -e 让脚本停下）：记下是哪一行哪条命令，退出时给用户看一句话和日志位置
+# Unexpected errors (set -e stops the script): log the line and command; the EXIT trap shows a short message
 trap 'log "ERROR line $LINENO: $BASH_COMMAND (exit $?)"' ERR
 
-# 转圈那一行末尾的附加信息（比如后台下载进度），默认没有
+# Extra text at the end of the spinner line (e.g. background download progress); empty by default
 spin_note() { :; }
 
-# 等一个后台进程结束，期间转圈并显示已等了多久；返回它的退出码。用法：spin <pid> <文字>
+# Wait for a background process while showing a spinner and elapsed time; returns its exit code. Usage: spin <pid> <text>
 spin() {
   local pid=$1 text=$2 start=$SECONDS i=0 note=""
   local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -240,7 +243,7 @@ file_size() { stat -f %z "$1" 2>/dev/null || echo 0; }
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
 mb() { printf '%d.%d' $(($1 / 1048576)) $(($1 % 1048576 * 10 / 1048576)); }
 
-# 进度条：长度固定（右边的数字定宽），速度按最近约 2 秒算，数字不乱跳
+# Progress bar: fixed width (fixed-width numbers on the right); speed is averaged over ~2 s so it does not jitter
 draw_progress() {
   local pid=$1 out=$2 total=$3 size elapsed speed=0 pct width filled bar stats cols t_prev s_prev t_now
   cols=$(term_cols)
@@ -284,7 +287,7 @@ CONFIG="$CODEX_HOME/config.toml"
 AUTH="$CODEX_HOME/auth.json"
 DL_PID=""
 
-# Ctrl+C 或出错退出时，连同后台下载一起停掉；已下载的部分留在缓存里，重新运行会接着下
+# On Ctrl+C or error, stop the background download too; the partial file stays in the cache and a rerun resumes it
 cleanup() {
   local rc=$?
   if [ -n "$DL_PID" ]; then pkill -P "$DL_PID" 2>/dev/null || true; kill "$DL_PID" 2>/dev/null || true; fi
@@ -294,7 +297,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'printf "\n\n  已停止。重新运行这行命令会接着之前的进度。\n\n" >&2; exit 130' INT TERM
 
-# ---------- Codex App：没装的话一开始就在后台下载，用户扫码的同时在下 ----------
+# ---------- Codex app: if missing, download in the background while the user scans the QR code ----------
 find_codex_app() {
   local app
   for app in "$APP_DIR/Codex.app" "$APP_DIR/ChatGPT.app" /Applications/Codex.app /Applications/ChatGPT.app \
@@ -306,20 +309,20 @@ find_codex_app() {
   return 1
 }
 
-# 版本号比较：version_ge 15.2 14.0 成立
+# Version comparison: version_ge 15.2 14.0 is true
 version_ge() {
   awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, ".")
     for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 0 }'
 }
 
-# 后台下载选中的线路到缓存目录（断了重新运行会接着下）。用法：download_codex_dmg <网址> <线路名> <文件>
-# 选好的线路、文件、大小写进 $WORK_DIR/dl.info，结果（0 成功）写进 $WORK_DIR/dl.rc。
+# Download the chosen source into the cache (resumable). Usage: download_codex_dmg <url> <source name> <file>
+# Writes source, file and size to $WORK_DIR/dl.info; the result (0 = success) goes to $WORK_DIR/dl.rc.
 download_codex_dmg() {
   local url=$1 name=$2 file=$3 headers total etag size
   headers=$(curl -sIL --connect-timeout 15 --max-time 20 "$url" 2>/dev/null | tr -d '\r')
   total=$(awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }' <<< "$headers")
   etag=$(awk 'tolower($1) == "etag:" { e = $2 } END { print e }' <<< "$headers")
-  # 上次没下完、而源上已经换了新版本：旧的半截文件不能续，删掉重下
+  # A partial file from an older release cannot be resumed; delete it and start over
   if [ -f "$file.etag" ] && [ "$(cat "$file.etag")" != "$etag" ]; then rm -f "$file"; fi
   printf '%s' "$etag" > "$file.etag"
   printf '%s\n%s\n%s\n' "$name" "$file" "$total" > "$WORK_DIR/dl.info"
@@ -335,8 +338,9 @@ download_codex_dmg() {
   return 1
 }
 
-# 所有下载线路同时测 8 秒，画成赛跑，选最快的。镜像在中国大陆走国内节点，不用科学上网也快；
-# 开着代理的用户可能官方源更快。测速下载的那一段直接留给正式下载接着用。
+# Race all download sources for 8 s and pick the fastest. The mirror is served from mainland China, so it is fast
+# without a proxy;
+# users with a proxy may get the official source faster. The bytes fetched while racing are reused by the real download.
 race_sources() {
   local urls names tags keys pids i n best probe code result speeds fastest other ratio
   if [ "$(uname -m)" = "arm64" ]; then
@@ -366,7 +370,7 @@ race_sources() {
   [ -n "$LIVE" ] || for ((i = 0; i < n; i++)); do info "${names[i]}：$(mb "$(echo $speeds | cut -d' ' -f$((i + 1)))") MB/s"; done
   [ "$best" -ge 0 ] 2>/dev/null || fail "下载线路都连不上。检查网络后重新运行这行命令。"
   SOURCE_URL=${urls[best]}; SOURCE_NAME=${names[best]}; SOURCE_FILE="$CACHE_DIR/Codex-${keys[best]}.dmg"
-  # 测速下的这一段就是文件开头：缓存里没有更长的，就直接接着用
+  # The probe is the start of the file: keep it unless the cache already has more
   probe="$WORK_DIR/probe.$best"; code=$(cat "$probe.code" 2>/dev/null)
   if [ "$code" = 206 ] || [ "$code" = 200 ]; then
     if [ "$(file_size "$probe")" -gt "$(file_size "$SOURCE_FILE")" ]; then mv "$probe" "$SOURCE_FILE"; rm -f "$SOURCE_FILE.etag"; fi
@@ -380,7 +384,7 @@ race_sources() {
   fi
 }
 
-# 转圈时附在后面的后台下载进度
+# Background download progress shown after the spinner
 download_note() {
   local file total
   if [ "$(cat "$WORK_DIR/dl.rc" 2>/dev/null)" = 0 ]; then printf '  · Codex 已在后台下载好'; return; fi
@@ -407,14 +411,14 @@ install_codex_app() {
     hdiutil detach "$mount_point" -quiet
     fail "Codex 需要 macOS ${need} 或更新的系统，这台 Mac 是 $(sw_vers -productVersion)。先在「系统设置 → 通用 → 软件更新」里升级，再重新运行这行命令。"
   }
-  # 不是管理员账号写不了「应用程序」文件夹，就装到自己的「应用程序」里
+  # Standard (non-admin) accounts cannot write /Applications; fall back to ~/Applications
   target="$APP_DIR"; [ -w "$target" ] || { target="$HOME/Applications"; mkdir -p "$target"; }
   ditto "$app_in_dmg" "$target/$(basename "$app_in_dmg")" </dev/null &
   spin $! "安装到「应用程序」文件夹" || { hdiutil detach "$mount_point" -quiet; fail "复制到「应用程序」文件夹失败。"; }
   hdiutil detach "$mount_point" -quiet
 }
 
-# ---------- 准备：系统检测、线路测速，然后在后台开始下载 ----------
+# ---------- Preparation: system check, source race, then start the background download ----------
 section "系统检测"
 if [ "$(uname -m)" = "arm64" ]; then CHIP="Apple 芯片"; else CHIP="Intel 芯片"; fi
 log "macOS $(sw_vers -productVersion) build=$(sw_vers -buildVersion) arch=$(uname -m) shell=$BASH_VERSION term=${TERM_PROGRAM:-?} live=${LIVE:-0} proxy=$([ -n "${https_proxy:-${HTTPS_PROXY:-}}" ] && echo 1 || echo 0)"
@@ -434,9 +438,10 @@ else
   spin_note() { download_note; }
 fi
 
-# ---------- 第 1 段：智谱账号（唯一需要用户动手的一步） ----------
-# 打开一个 Safari 内核的小窗口（系统自带，不用装浏览器），用户扫码登录后在页面里调用控制台自己的
-# 「新建 API Key」接口。完整 Key 只在创建时返回一次，直接交给本脚本，不显示、不进剪贴板。
+# ---------- Step 1: Zhipu account (the only step that needs the user) ----------
+# Open a small WebKit window (built into macOS, no browser needed). After the QR login, call the console's own
+# "create API key" endpoint from the page. The full key is returned only once and goes straight to this script:
+# never displayed, never on the clipboard.
 cat > "$WORK_DIR/zhipu_login.js" <<'JXA'
 ObjC.import('Cocoa');
 ObjC.import('WebKit');
@@ -464,7 +469,7 @@ function run() {
       app.sendEvent(event);
     }
   };
-  // 页面里的结果通过 document.title 传回来（窗口标题是单独设置的，不会显示它）
+  // Page results come back through document.title (the window title is set separately, so it is never shown)
   const evaluate = (code) => { webView.evaluateJavaScriptCompletionHandler(code, (result, error) => {}); };
   const readTitle = () => ObjC.unwrap(webView.title) || '';
   const READ_STATE = `(() => {
@@ -496,7 +501,7 @@ function run() {
     evaluate(READ_STATE);
     pumpEvents(0.5);
     if (readTitle() !== 'STATE:ready') {
-      // 微信二维码几分钟就过期：没登录的话每 4 分钟自动刷新一次
+      // WeChat QR codes expire within minutes: reload every 4 minutes until the user logs in
       if (Date.now() - lastRefresh > 4 * 60 * 1000) { webView.reload; lastRefresh = Date.now(); }
       continue;
     }
@@ -512,19 +517,21 @@ function run() {
 JXA
 
 
-# 用这个 Key 依次试智谱免费模型，能用就输出模型名；不能用时最后的 HTTP 状态码留在 $WORK_DIR/status
+# Try each free Zhipu model with this key and print the first that works; the last HTTP status is left in $WORK_DIR/status
 find_free_model() {
   local key=$1 candidate status
+  # Pass the key through a private header file, not argv, so other local users cannot see it in ps
+  ( umask 077; printf 'Authorization: Bearer %s\n' "$key" > "$WORK_DIR/auth.header" )
   for candidate in $FREE_MODELS; do
     for _ in 1 2 3; do
       curl -s -o "$WORK_DIR/reply.json" -w '%{http_code}' --max-time 60 \
-        -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+        -H @"$WORK_DIR/auth.header" -H 'Content-Type: application/json' \
         -d "{\"model\":\"$candidate\",\"input\":\"Reply with exactly one word: pong\",\"max_output_tokens\":16}" \
         "$ZHIPU_BASE_URL/responses" </dev/null >"$WORK_DIR/status" 2>/dev/null &
       spin $! "测试智谱免费模型 $candidate" || true
       status=$(cat "$WORK_DIR/status" 2>/dev/null); status=${status:-000}
       log "model test $candidate: HTTP $status"
-      # 智谱在 Key 无效时也回 HTTP 200，正文是 {"code":1000,"msg":"身份验证失败。","success":false}
+      # Zhipu answers HTTP 200 even for an invalid key, with a body like {"code":1000,...,"success":false}
       if [ "$status" = "200" ] && grep -q '"success":false' "$WORK_DIR/reply.json" 2>/dev/null; then
         status=401; printf '%s' "$status" > "$WORK_DIR/status"
       fi
@@ -537,7 +544,7 @@ find_free_model() {
 }
 
 say "登录智谱"
-# 以前用这个脚本配好过、Key 还能用：不用再扫码，也不再新建 Key
+# Already set up by this script and the key still works: no new scan, no new key
 OLD_KEY=""
 if [ -f "$AUTH" ] && grep -Eq '^model_provider = "zhipu"' "$CONFIG" 2>/dev/null; then
   OLD_KEY=$(sed -n 's/^{"OPENAI_API_KEY":"\(.*\)"}$/\1/p' "$AUTH")
@@ -563,7 +570,8 @@ else
       ok "已登录，自动创建好 API Key"
       key_note
     else
-      # 和 Windows 版一样没有手动复制 Key 的退路：窗口被关、没扫码、智谱接口出错，都让用户重新运行，日志里留下原因
+      # Like the Windows version, there is no manual copy-the-key fallback: a closed window, no scan or a Zhipu
+      # API error all ask the user to rerun, with the reason in the log
       log "login outcome: ${login_outcome:-empty}"
       case "$login_outcome" in
         CANCELLED) fail "智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。" ;;
@@ -577,14 +585,14 @@ else
 fi
 ok "智谱免费模型可以用：$MODEL"
 
-# ---------- 拿到 Key 马上写配置：后面安装出错时重新运行不用再扫码 ----------
-# 只改 model、model_provider 和 [model_providers.zhipu]，其余配置原样保留；内容有变化时才备份原文件
+# ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
+# Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content changes.
 mkdir -p "$CODEX_HOME"
 BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
 {
   printf 'model_provider = "zhipu"\nmodel = "%s"\n\n' "$MODEL"
   if [ -f "$CONFIG" ]; then
-    # 删掉表头之前的顶层 model / model_provider，以及旧的 [model_providers.zhipu] 整张表
+    # Drop top-level model / model_provider (before the first table) and the whole old [model_providers.zhipu] table
     awk '
       /^\[/ { in_table = 1; skip = ($0 == "[model_providers.zhipu]") }
       !in_table && /^[[:space:]]*(model|model_provider)[[:space:]]*=/ { next }
@@ -593,10 +601,11 @@ BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
   fi
   printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL"
 } > "$WORK_DIR/config.toml"
-# Codex 界面默认跟系统语言走；用户没自己选过语言的话，设成简体中文（Codex 设置里的「语言」，存在 [desktop] 下）
+# Codex follows the system language by default; unless the user already picked one, set Simplified Chinese
+# (the Language setting, stored under [desktop])
 if ! grep -Eq '^[[:space:]]*localeOverride[[:space:]]*=' "$WORK_DIR/config.toml"; then
   if grep -q '^\[desktop\]' "$WORK_DIR/config.toml"; then
-    # 跟着 [desktop] 那一行的换行写（Windows 编辑过的文件是 CRLF），不混用换行
+    # Match the line ending of the [desktop] line (files edited on Windows use CRLF) instead of mixing them
     awk '{ print } /^\[desktop\]/ && !done { eol = ($0 ~ /\r$/) ? "\r" : ""; print "localeOverride = \"zh-CN\"" eol; done = 1 }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
     mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml"
   elif grep -q $'\r$' "$WORK_DIR/config.toml"; then
@@ -619,7 +628,7 @@ ok "已把 Key 和模型写进 Codex 的配置"
 [ -z "$BACKED_UP" ] || info "原来的配置已备份为 *${BACKUP_SUFFIX}"
 
 
-# ---------- 第 2 段：下载并安装 Codex ----------
+# ---------- Step 2: download and install Codex ----------
 say "安装 Codex"
 if [ -n "$CODEX_APP" ]; then
   ok "已经装过 Codex，跳过"
@@ -644,9 +653,10 @@ else
   ok "Codex 已装好"
 fi
 
-# ---------- 第 3 段：试一句、打开 ----------
+# ---------- Step 3: smoke test, then open ----------
 say "打开 Codex"
-# 新 Mac 没有苹果的「命令行开发者工具」，Codex 第一次启动会触发系统弹窗；先说清楚，再由这里弹出
+# A fresh Mac lacks the Command Line Developer Tools and Codex would trigger the system prompt on first launch;
+# explain it first, then trigger it here
 if ! xcode-select -p >/dev/null 2>&1; then
   todo "系统会弹窗问要不要安装「命令行开发者工具」：这是苹果官方组件，Codex 要用到，点「安装」就行"
   info "它自己在后台装，不影响现在用 Codex"
@@ -655,7 +665,7 @@ fi
 
 CODEX_CLI="$CODEX_APP/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 if [ -x "$CODEX_CLI" ]; then
-  # Mac 没有 timeout 命令：后台运行，最多等 120 秒
+  # macOS has no timeout(1): run in the background and give up after 120 s
   ( cd "$WORK_DIR" && CODEX_HOME="$CODEX_HOME" "$CODEX_CLI" exec --ephemeral --skip-git-repo-check "只回复两个字：好了" < /dev/null > "$WORK_DIR/verify.txt" 2>/dev/null ) &
   verify_pid=$!
   ( sleep 120; pkill -P "$verify_pid" 2>/dev/null; kill "$verify_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
@@ -670,8 +680,9 @@ fi
 done_line "Codex 已经打开，用的是智谱免费模型 ${C_BOLD}${MODEL}${C_RESET}"
 next_steps "$CODEX_APP" "$CONFIG"
 
-# ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
-# 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+# ---------- Closing banner: other free HumansLive tools ----------
+# Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.
+# If it cannot be fetched, print one URL instead; the install result is unaffected.
 show_banner() {
   local banner kind a b reset="" dim="" bold="" blue="" link=""
   banner=$(curl -fsS --max-time 6 "https://humanslive.ai/api/install-banner?f=$1&w=$(term_cols)" 2>/dev/null | tr -d '\033\r') || banner=""

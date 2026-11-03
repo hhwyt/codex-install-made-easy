@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Codex 官方安装（HumansLive 包装）：先运行官方安装命令，再去掉国产模型版留下的智谱配置。
-#   用法：curl -fsSL https://humanslive.ai/codex-official.sh | bash
-# 官方命令：curl -fsSL https://chatgpt.com/codex/install.sh | sh
+# Codex official install (HumansLive wrapper): removes the Zhipu config left by the Chinese-model edition,
+# then runs OpenAI's official install command.
+#   Usage: curl -fsSL https://humanslive.ai/codex-official.sh | bash
+# Official command: curl -fsSL https://chatgpt.com/codex/install.sh | sh
+# Source: https://github.com/hhwyt/codex-install-made-easy
+set -euo pipefail
 
-# ---------- 终端输出 ----------
-# 只有一个强调色（蓝），次要信息用灰色，红色只用于出错；不是终端（被重定向）或设了 NO_COLOR 时不上色、不画动画。
-# 所有提示都写到 stderr：标准输出留给 $(...) 取值用。
+# ---------- Terminal output ----------
+# One accent color (blue), gray for secondary text, red only for errors. No color or animation when stderr is
+# not a terminal or NO_COLOR is set.
+# All messages go to stderr; stdout is reserved for $(...) captures.
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_DIM=$'\033[2m' C_BLUE=$'\033[38;5;33m' C_RED=$'\033[31m'
   LIVE=1
@@ -13,7 +17,7 @@ else
   C_RESET="" C_BOLD="" C_DIM="" C_BLUE="" C_RED="" LIVE=""
 fi
 STEP=0
-# 路径里的家目录显示成 ~，短一些
+# Show the home directory as ~
 short_path() { case "$1" in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
 term_cols() { local cols; cols=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); [ "${cols:-0}" -gt 0 ] 2>/dev/null && echo "$cols" || echo 80; }
 header() {
@@ -38,9 +42,9 @@ header "Codex 官方安装" "用 OpenAI 官方安装命令，登录你自己的 
 
 say "检查旧配置"
 CLEANED=""
-# 以前用国产模型版装过：它写的智谱配置会让 Codex 继续走智谱、不认 ChatGPT 登录。
-# 只删国产模型版写的那几行（model_provider = "zhipu"、model = "glm-…"、[model_providers.zhipu]）
-# 和只装着智谱 Key 的 auth.json，其余原样保留；改之前先备份。
+# A previous Chinese-model install leaves a Zhipu config that keeps Codex on Zhipu and ignores ChatGPT sign-in.
+# Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", [model_providers.zhipu])
+# and an auth.json that holds only a Zhipu key; keep everything else and back up first.
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
 AUTH="$CODEX_HOME/auth.json"
@@ -60,8 +64,6 @@ if [ -f "$AUTH" ] && grep -Eqx '[{]"OPENAI_API_KEY":"[0-9a-f]{32}[.][A-Za-z0-9]{
   CLEANED=1; ok "已移走国产模型版的智谱 Key"; info "备份为 $(short_path "$AUTH")$BACKUP_SUFFIX"
 fi
 [ -n "$CLEANED" ] || ok "没有要处理的旧配置"
-# 源码：私有仓库 codex-install-made-easy（网站 public/ 下是副本，改动两边同步）。
-set -euo pipefail
 
 say "运行 OpenAI 官方安装命令"
 info "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
@@ -72,8 +74,9 @@ done_line "Codex 已装好，接下来："
 todo "打开一个新的终端窗口，进入项目文件夹，输入 codex 回车"
 todo "选 Sign in with ChatGPT，用你的 ChatGPT 账号登录"
 
-# ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
-# 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+# ---------- Closing banner: other free HumansLive tools ----------
+# Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.
+# If it cannot be fetched, print one URL instead; the install result is unaffected.
 show_banner() {
   local banner kind a b reset="" dim="" bold="" blue="" link=""
   banner=$(curl -fsS --max-time 6 "https://humanslive.ai/api/install-banner?f=$1&w=$(term_cols)" 2>/dev/null | tr -d '\033\r') || banner=""

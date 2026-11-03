@@ -1,40 +1,46 @@
-# Codex 一键安装（Windows）：装好官方 Codex App，用微信扫码登录智谱后自动创建 API Key，接上智谱免费模型。
-# 用法（PowerShell）：irm https://humanslive.ai/codex.ps1 | iex
-# 只做这几件事：下载并核对官方 Codex 安装包（国内镜像，不行就用微软商店）、打开智谱登录窗口、新建一个 API Key、
-# 写 %USERPROFILE%\.codex 下的配置、打开 Codex。和 Mac 版一样：先扫码，Codex 同时在后台下载。
-# 兼容 Windows 自带的 PowerShell 5.1。Codex 带一个系统服务（跑命令时的沙盒靠它），Windows 规定装它要管理员确认：
-# 开头弹一次系统确认框，只用来安装 Codex；其余步骤都用用户自己的身份。
-# 每次运行都写日志到 %LOCALAPPDATA%\HumansLive\logs，出错时把这个文件发给我们就能查；日志里不写 Key。
+# Codex one-command installer (Windows): installs the official Codex app, creates a Zhipu API key after a
+# WeChat QR login, and wires Codex to Zhipu's free model.
+# Usage (PowerShell): irm https://humanslive.ai/codex.ps1 | iex
+# It only: downloads and verifies the official Codex package (China mirror, falling back to the Microsoft Store),
+# opens a Zhipu login window, creates one API key,
+# writes the config under %USERPROFILE%\.codex, and opens Codex. As on Mac, Codex downloads in the background while
+# the user scans.
+# Works with the built-in Windows PowerShell 5.1. Codex ships a system service (its command sandbox relies on it)
+# and Windows requires administrator consent to install it:
+# one UAC prompt at the start, used only to install Codex; every other step runs as the user.
+# Every run writes a log to %LOCALAPPDATA%\HumansLive\logs for debugging. Keys are never logged.
 
-$ErrorActionPreference = 'Continue'   # codex.exe 会往 stderr 写警告，Stop 会把它当成错误中断
+$ErrorActionPreference = 'Continue'   # codex.exe writes warnings to stderr; 'Stop' would treat them as fatal
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $ProgressPreference = 'SilentlyContinue'
 
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
 $CodexStoreId = '9PLM9XGG6VKS'
 $CodexPackageName = 'OpenAI.Codex'
-$CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # 微软商店里 OpenAI.Codex 的发布者，用来核对镜像下载的安装包
+$CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # Publisher of OpenAI.Codex in the Microsoft Store; used to verify mirror downloads
 $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-$FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # 4.5-flash 已被智谱转到 4.7-flash，先试新的
+$FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
 $DebugPort = 9333
 $CacheDir = if ($env:CODEX_SETUP_CACHE_DIR) { $env:CODEX_SETUP_CACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'HumansLive' }
 $WorkDir = Join-Path $env:TEMP ('codex-setup-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
 
-# ---------- 日志：每一步写一行，出错时用户把文件发来就能查 ----------
+# ---------- Log: one line per step, so a user can send us the file when something fails ----------
 $LogFile = Join-Path $CacheDir ('logs\codex-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 New-Item -ItemType Directory -Force (Split-Path $LogFile) | Out-Null
 function Log($text) { try { Add-Content -LiteralPath $LogFile -Value ((Get-Date -Format 'HH:mm:ss.fff') + '  ' + $text) -Encoding UTF8 } catch { } }
 
-# ---------- 终端输出 ----------
-# 只有一个强调色（蓝），次要信息用灰色，红色只用于出错。支持 ANSI 的终端里有动画，和 Mac 版用同一套字符；
-# 老的控制台窗口（字体里没有盲文、片假名、粗横线）用 ASCII。输出被重定向或设了 NO_COLOR 时只打纯文字。
+# ---------- Terminal output ----------
+# One accent color (blue), gray for secondary text, red only for errors. ANSI terminals get the same animations and
+# glyphs as the Mac version;
+# the legacy console (whose font lacks braille, katakana and heavy box lines) gets ASCII. Redirected output or
+# NO_COLOR gets plain text.
 $E = [char]27
 $Live = $Host.UI.SupportsVirtualTerminal -and -not [Console]::IsOutputRedirected -and -not $env:NO_COLOR
-# 是不是 Windows Terminal：Windows 11 默认把 PowerShell 开在 Windows Terminal 里，但这时 WT_SESSION 是空的，
-# 所以看控制台窗口的类名（Windows Terminal 是 PseudoConsoleWindow，老控制台是 ConsoleWindowClass）
+# Detect Windows Terminal: Windows 11 opens PowerShell in it by default, but WT_SESSION is empty in that case,
+# so check the console window class (PseudoConsoleWindow for Windows Terminal, ConsoleWindowClass for the legacy console)
 $ConsoleClass = ''
 try {
   Add-Type -Namespace HL -Name Con -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int n);'
@@ -54,7 +60,7 @@ $Script:Started = Get-Date
 
 function W($text) { Write-Host $text -NoNewline }
 function Get-ConsoleWidth { try { [int]$Host.UI.RawUI.WindowSize.Width } catch { 80 } }
-# 终端里占几列：中文等宽字符占两列
+# Display width in terminal columns: CJK wide characters take two
 function Get-TextWidth([string]$text) {
   $w = 0
   foreach ($ch in $text.ToCharArray()) {
@@ -67,7 +73,7 @@ function Get-TextWidth([string]$text) {
 function Pad([string]$text, [int]$width) { $text + (' ' * [Math]::Max(0, $width - (Get-TextWidth $text))) }
 function MB([double]$bytes) { '{0:0.0}' -f ($bytes / 1MB) }
 
-# 数字雨：几行字符往下落，结束后擦掉
+# Digital rain: a few rows of falling glyphs, erased when done
 function Show-Rain([int]$cols, [int]$rows, [int]$ms) {
   $glyphs = if ($Fancy) { ('0123456789' + (-join ((0xFF66..0xFF9D) | ForEach-Object { [char]$_ }))).ToCharArray() } else { '0123456789ABCDEFXZ#$%&'.ToCharArray() }
   $rand = [Random]::new()
@@ -93,7 +99,7 @@ function Show-Rain([int]$cols, [int]$rows, [int]$ms) {
   }
   W ("$E[${rows}A" + ("`r$E[K`n" * $rows) + "$E[${rows}A")
 }
-# 乱码逐字解码成文字（只打乱英文和数字，中文原样）
+# Text decodes out of noise (only ASCII is scrambled; CJK stays as is)
 function Show-Decode([string]$color, [string]$text) {
   $chars = $text.ToCharArray(); $rand = [Random]::new(); $pool = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()
   for ($s = 0; $s -le 14; $s++) {
@@ -131,7 +137,7 @@ function Finish($text) {
   Write-Host "     ${Dim}用时 $tookText$R"
   Write-Host "     $text"
 }
-# 出错时：说清楚怎么办，指出日志文件并在资源管理器里选中它，方便用户发给我们
+# On failure: say what to do, show the log path and select the file in Explorer so it is easy to send
 function Show-Error($text) {
   if ($Live) { W "`r$E[K" }
   Write-Host ''
@@ -142,14 +148,14 @@ function Show-Error($text) {
   Write-Host ''
   Start-Process explorer.exe "/select,`"$LogFile`"" -ErrorAction SilentlyContinue
 }
-# 拿到 Key 后告诉用户它在哪、谁能拿到
+# After the key is created, tell the user where it lives and who can see it
 function Show-KeyNote {
   $lock = if ($Fancy) { '🔒 ' } else { '' }
   Write-Host "       $Blue$lock$R${Bold}安全说明$R"
   Info '这个 Key 是用你自己的智谱账号建的，只保存在你的电脑上，绝对安全'
   Info '随时可以在智谱控制台删掉（名字以 Codex- 开头）'
 }
-# 装好以后：怎么打开、免费模型的限速和充值、更强的模型
+# After install: how to open Codex, free-model rate limits and top-ups, stronger models
 function Show-NextSteps($configShown) {
   Section '以后怎么打开' ''
   Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R"
@@ -165,10 +171,10 @@ function Show-NextSteps($configShown) {
 function Fail($text) {
   Log "FAIL $text"
   Show-Error $text
-  throw 'HL_FAIL'   # 外面的 catch 认这个，不再让 PowerShell 打一大段红色错误
+  throw 'HL_FAIL'   # The outer catch recognizes this and skips PowerShell's red error dump
 }
 
-# 转圈一小段时间（同时推进后台下载），显示文字、已等的秒数和后台下载进度
+# Spin for a moment (while advancing the background download), showing text, elapsed seconds and download progress
 $Script:SpinTick = 0
 function Wait-Tick([double]$seconds, [string]$text, [datetime]$since) {
   $until = (Get-Date).AddSeconds($seconds)
@@ -184,12 +190,12 @@ function Wait-Tick([double]$seconds, [string]$text, [datetime]$since) {
 }
 function Clear-Line { if ($Live) { W "`r$E[K" } }
 
-# ---------- 后台下载：curl.exe（Windows 10 起自带），断了自动重试，下到缓存目录，中断后重新运行会接着下 ----------
+# ---------- Background download: curl.exe (built in since Windows 10), auto-retry, cached and resumable on rerun ----------
 $Script:Dl = $null   # @{ Url; Name; File; Total; Proc; Tries; Done; Failed }
 function Start-DownloadProcess {
   $d = $Script:Dl
   $d.Proc = Start-Process curl.exe -PassThru -WindowStyle Hidden -ArgumentList @('-fsSL', '-C', '-', '--retry', '3', '--connect-timeout', '15', '-o', "`"$($d.File)`"", $d.Url)
-  $null = $d.Proc.Handle   # 不先取一次 Handle，进程结束后拿不到退出码
+  $null = $d.Proc.Handle   # Touch Handle now, or ExitCode is unavailable after the process exits
   $d.Tries++
   Log "download try $($d.Tries): $($d.Url)"
 }
@@ -200,7 +206,7 @@ function Start-Download($url, $name, $file) {
     if ($line -match '^(?i)content-length:\s*(\d+)') { $total = [long]$Matches[1] }
     if ($line -match '^(?i)etag:\s*(\S+)') { $etag = $Matches[1] }
   }
-  # 上次没下完、而源上已经换了新版本：旧的半截文件不能续，删掉重下
+  # A partial file from an older release cannot be resumed; delete it and start over
   if ((Test-Path "$file.etag") -and ((Get-Content "$file.etag" -Raw) -ne $etag)) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
   Set-Content "$file.etag" $etag -NoNewline
   $size = if (Test-Path $file) { (Get-Item $file).Length } else { 0 }
@@ -227,7 +233,7 @@ function Get-DownloadNote {
 }
 function Stop-Download { if ($Script:Dl -and $Script:Dl.Proc -and -not $Script:Dl.Proc.HasExited) { Stop-Process -Id $Script:Dl.Proc.Id -Force -ErrorAction SilentlyContinue } }
 
-# 前台画进度条，直到后台下载结束
+# Draw the progress bar in the foreground until the background download ends
 function Show-DownloadProgress {
   $d = $Script:Dl
   $windowStart = Get-Date; $windowBytes = Get-DownloadedBytes; $speed = 0
@@ -250,7 +256,7 @@ function Show-DownloadProgress {
   Clear-Line
 }
 
-# ---------- 线路测速：镜像和微软商店。镜像在中国大陆走国内节点，测 8 秒；商店没法单独测速，作为备用 ----------
+# ---------- Source race: mirror vs Microsoft Store. The mirror is served from mainland China and gets 8 s; the Store cannot be probed, so it is the fallback ----------
 function Select-Source {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
   $mirrorUrl = "https://codexapp.agentsmirror.com/latest/$arch"
@@ -293,7 +299,7 @@ function Select-Source {
     }
   }
   if (-not $useMirror) { return $null }
-  # 测速下的这一段就是文件开头：缓存里没有更长的，就直接接着用
+  # The probe is the start of the file: keep it unless the cache already has more
   New-Item -ItemType Directory -Force $CacheDir | Out-Null
   $cached = if (Test-Path $file) { (Get-Item $file).Length } else { 0 }
   if ($size -gt $cached) { Move-Item $probe $file -Force; Remove-Item "$file.etag" -ErrorAction SilentlyContinue }
@@ -301,12 +307,15 @@ function Select-Source {
   @{ Url = $mirrorUrl; Name = '国内镜像'; File = $file }
 }
 
-# ---------- 安装 Codex ----------
-# Codex 的安装包带一个系统服务（CodexSandboxService）：Codex 跑命令时的沙盒靠它，有了它以后跑命令不用再要管理员权限，
-# 新版也由 Codex 自己或微软商店推送。Windows 规定装它要管理员确认（双击安装、微软商店、Add-AppxPackage 都一样）。
-# 不能绕：不装成正式的包，沙盒每跑一条命令都要管理员确认，而且永远收不到新版（实测和 Codex 源码都证实）。
-# 所以开头就弹一次系统确认框，起一个有管理员权限的小进程在后台等着，下载、核对完以后由它来装。
-# 用户点「是」、扫码，就可以走开了。其余步骤（下载、登录、写配置）都用用户自己的身份。
+# ---------- Install Codex ----------
+# The Codex package ships a system service (CodexSandboxService). Its command sandbox relies on it; once installed,
+# commands need no elevation,
+# and updates come from Codex itself or the Store. Windows requires administrator consent to install it (double-click,
+# Store and Add-AppxPackage alike).
+# There is no way around it: without a properly installed package, every sandboxed command asks for elevation and
+# the app never updates (verified on a PC and in the Codex source).
+# So we prompt once at the start and keep a small elevated helper waiting; it installs once the download is verified.
+# The user clicks Yes, scans, and can walk away. Everything else (download, login, config) runs as the user.
 function Get-CodexPackage { Get-AppxPackage -Name $CodexPackageName -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1 }
 function Get-Codex {
   $pkg = Get-CodexPackage
@@ -317,12 +326,14 @@ function Open-Codex($codex) {
   Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
 }
 function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
-# 当前账号在不在管理员组。窗口没提权时这个组标成「仅用于拒绝」，但 SID 还在，所以看 SID。
-# 不在的话，确认框会要管理员的密码，而且包会装到那个管理员名下，本人还是用不了
+# Is the current account in Administrators? In a non-elevated window the group is deny-only but the SID is still
+# listed, so check the SID.
+# If not, UAC asks for another admin's password and the package installs for that admin, not for this user
 function Test-AdminMember { [bool]((whoami /groups) -match 'S-1-5-32-544') }
 
-# 开头弹一次确认框，起一个有管理员权限的小进程，等主进程写好 install.go（里面是核对过的安装包路径）再安装，
-# 结果写进 install.result。主进程没了它也退出。用户点「否」时 Start-Process 会抛「操作已被用户取消」，脚本当场就知道
+# Prompt once at the start and launch an elevated helper. It waits for install.go (the path of the verified package),
+# installs it and writes install.result; it exits if the main process goes away. If the user clicks No, Start-Process
+# throws "The operation was canceled by the user", so we know right away
 $Script:Helper = $null
 function Start-InstallHelper {
   if (Test-Elevated) { Log 'already elevated, no helper needed'; return }
@@ -348,7 +359,8 @@ while (-not (Test-Path `$go)) { if (-not (Get-Process -Id $PID -ErrorAction Sile
   }
 }
 
-# 镜像下载的安装包：核对是不是微软商店里那份 OpenAI 官方的 Codex（包名、发布者、签名），再交给有管理员权限的小进程安装
+# Mirror download: verify it is OpenAI's Codex from the Microsoft Store (name, publisher, signature), then hand it to
+# the elevated helper
 function Install-FromMsix($file) {
   $job = Start-Job -ArgumentList $file -ScriptBlock {
     param($f)
@@ -405,10 +417,10 @@ function Install-FromStore {
   $since = Get-Date
   while (-not $winget.HasExited) { Wait-Tick 0.3 '从微软商店安装 Codex' $since }
   Clear-Line
-  Log "winget exit=$($winget.ExitCode)"   # 没点「是」时 winget 也报成功，所以外面还要再查一次装没装上
+  Log "winget exit=$($winget.ExitCode)"   # winget reports success even when UAC was declined, so the caller checks again
 }
 
-# ---------- 智谱 API Key ----------
+# ---------- Zhipu API key ----------
 function Find-Edge {
   foreach ($path in @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe", "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe")) {
     if (Test-Path $path) { return $path }
@@ -465,7 +477,7 @@ function Get-ZhipuKeyAutomatically {
     "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
     "--app=$ZhipuLoginUrl", '--window-size=1100,800')
   try {
-    # 页面刷新或跳转后调试连接会断，所以每次出错都重新找页面、重新连；只有窗口真的关了才算放弃
+    # Reloads and navigations drop the DevTools connection, so reconnect on every error; give up only when the window is closed
     $connectToPage = {
       for ($i = 0; $i -lt 20; $i++) {
         try {
@@ -489,7 +501,7 @@ function Get-ZhipuKeyAutomatically {
     $lastRefresh = Get-Date
     while ((Get-Date) -lt $deadline) {
       Wait-Tick 1.5 '等待扫码登录' $loginSince
-      # 调试端口没了，说明用户把登录窗口关了
+      # The debugging port is gone: the user closed the login window
       try { Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/version" -TimeoutSec 2 | Out-Null } catch { return 'CANCELLED' }
       try { $state = Invoke-PageScript $socket ([ref]$nextId) $ReadStateScript }
       catch {
@@ -498,14 +510,14 @@ function Get-ZhipuKeyAutomatically {
         continue
       }
       if ($state -ne 'ready') {
-        # 微信二维码几分钟就过期：没登录的话每 4 分钟自动刷新一次，用户不用自己点
+        # WeChat QR codes expire within minutes: reload every 4 minutes until the user logs in
         if (((Get-Date) - $lastRefresh).TotalMinutes -ge 4) {
           try { Invoke-PageScript $socket ([ref]$nextId) 'location.reload()' | Out-Null } catch { }
           $lastRefresh = Get-Date
         }
         continue
       }
-      Start-Sleep -Seconds 2   # 等跳转到控制台页面稳定下来
+      Start-Sleep -Seconds 2   # Let the redirect to the console settle
       $result = Invoke-PageScript $socket ([ref]$nextId) $CreateKeyScript
       if ($result -like 'KEY:*') { return $result.Substring(4) }
       return $result
@@ -517,14 +529,14 @@ function Get-ZhipuKeyAutomatically {
 }
 
 
-# 用这个 Key 依次试智谱免费模型，能用就返回模型名；不能用时最后的 HTTP 状态码放在 $Script:LastStatus
+# Try each free Zhipu model with this key and return the first that works; the last HTTP status is left in $Script:LastStatus
 function Find-FreeModel($key) {
   foreach ($candidate in $FreeModels) {
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
       $job = Start-Job -ArgumentList $ZhipuBaseUrl, $key, $candidate -ScriptBlock {
         param($base, $k, $m)
         $body = @{ model = $m; input = 'Reply with exactly one word: pong'; max_output_tokens = 16 } | ConvertTo-Json -Compress
-        # 智谱在 Key 无效时也回 HTTP 200，正文是 {"code":1000,"msg":"身份验证失败。","success":false}
+        # Zhipu answers HTTP 200 even for an invalid key, with a body like {"code":1000,...,"success":false}
         try { $resp = Invoke-RestMethod -Method Post -Uri "$base/responses" -Headers @{ Authorization = "Bearer $k" } -ContentType 'application/json' -Body $body -TimeoutSec 60; if ($resp.success -eq $false) { 401 } else { 200 } }
         catch { [int]$_.Exception.Response.StatusCode }
       }
@@ -542,12 +554,12 @@ function Find-FreeModel($key) {
   return $null
 }
 
-# ================= 开始 =================
+# ================= Main =================
 $Steps = 3
 try {
   Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱'
 
-  # ---------- 准备：系统检测、线路测速，然后在后台开始下载 ----------
+  # ---------- Preparation: system check, source race, then start the background download ----------
   Section '系统检测' ''
   $os = Get-CimInstance Win32_OperatingSystem
   Log "os=$($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE ps=$($PSVersionTable.PSVersion) console=$ConsoleClass fancy=$Fancy live=$Live"
@@ -570,12 +582,12 @@ try {
     if ($source) { Start-Download $source.Url $source.Name $source.File; Start-InstallHelper }
   }
 
-  # ---------- [1/3] 智谱账号（唯一需要用户动手的一步） ----------
+  # ---------- [1/3] Zhipu account (the only step that needs the user) ----------
   Say '登录智谱'
   $configPath = Join-Path $CodexHome 'config.toml'
   $authPath = Join-Path $CodexHome 'auth.json'
   $utf8NoBom = [Text.UTF8Encoding]::new($false)
-  # 以前用这个脚本配好过、Key 还能用：不用再扫码，也不再新建 Key
+  # Already set up by this script and the key still works: no new scan, no new key
   $oldKey = $null
   if ((Test-Path $authPath) -and (Test-Path $configPath) -and (Select-String -Quiet -Path $configPath -Pattern '^model_provider = "zhipu"')) {
     if ([IO.File]::ReadAllText($authPath, $utf8NoBom).Trim() -match '^\{"OPENAI_API_KEY":"(.+)"\}$') { $oldKey = $Matches[1] }
@@ -600,8 +612,10 @@ try {
         Ok '已登录，自动创建好 API Key'
         Show-KeyNote
       } else {
-        # 没有手动复制 Key 的退路：读剪贴板会被 Windows Defender 当成盗号脚本拦掉（VirTool:PowerShell/MaleficAms），
-        # 而且用户不该再多做一步。窗口被关、没扫码、智谱接口出错，都让用户重新运行，日志里留下原因
+        # No manual copy-the-key fallback: reading the clipboard gets the script flagged by Windows Defender as a
+        # credential stealer (VirTool:PowerShell/MaleficAms),
+        # and the user should not need an extra step. A closed window, no scan or a Zhipu API error all ask the
+        # user to rerun, with the reason in the log
         Log "login outcome: $outcome"
         switch -Wildcard ($outcome) {
           'CANCELLED' { Fail '智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。' }
@@ -615,8 +629,9 @@ try {
     if (-not $Model) { Fail "智谱免费模型暂时不可用（HTTP $Script:LastStatus），请稍后重新运行这行命令。" }
   }
   Ok "智谱免费模型可以用：$Model"
-  # ---------- 拿到 Key 马上写配置：后面安装出错时重新运行不用再扫码 ----------
-  # 只改 model、model_provider 和 [model_providers.zhipu]，其余配置原样保留；内容有变化时才备份原文件。UTF-8 不带 BOM。
+  # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
+  # Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content
+  # changes. UTF-8 without BOM.
   New-Item -ItemType Directory -Force $CodexHome | Out-Null
   $backupSuffix = '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   $keptLines = @()
@@ -630,7 +645,8 @@ try {
   }
   $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"", '') + $keptLines + @(
     '', '[model_providers.zhipu]', 'name = "智谱 GLM"', "base_url = `"$ZhipuBaseUrl`"", 'wire_api = "responses"', 'requires_openai_auth = true')
-  # Codex 界面默认跟系统语言走；用户没自己选过语言的话，设成简体中文（Codex 设置里的「语言」，存在 [desktop] 下）
+  # Codex follows the system language by default; unless the user already picked one, set Simplified Chinese
+  # (the Language setting, stored under [desktop])
   if (-not ($configLines -match '^\s*localeOverride\s*=')) {
     $desktopAt = [array]::IndexOf($configLines, '[desktop]')
     if ($desktopAt -ge 0) {
@@ -653,7 +669,7 @@ try {
   if ($backedUp) { Info "原来的配置已备份为 *$backupSuffix" }
 
 
-  # ---------- [2/3] 安装 Codex ----------
+  # ---------- [2/3] Install Codex ----------
   Say '安装 Codex'
   if ($codex) {
     Ok "已经装过 Codex $($codex.Version)，跳过"
@@ -679,15 +695,15 @@ try {
     Ok "Codex $($codex.Version) 已装好"
   }
 
-  # ---------- [3/3] 试一句、打开 ----------
+  # ---------- [3/3] Smoke test, then open ----------
   Say '打开 Codex'
   $codexCli = $codex.Cli
   if (Test-Path $codexCli) {
-    # 不关掉标准输入 codex 会一直等；用后台任务限时 120 秒
+    # codex waits forever unless stdin is closed; run it as a job with a 120 s limit
     $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir -ScriptBlock {
       param($cli, $codexHomeDir, $dir)
       $env:CODEX_HOME = $codexHomeDir
-      [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex 输出 UTF-8，不设的话中文回复会乱码
+      [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex prints UTF-8; without this, Chinese replies are garbled
       Set-Location $dir
       cmd /c "`"$cli`" exec --ephemeral --skip-git-repo-check `"只回复两个字：好了`" < NUL 2>NUL"
     }
@@ -703,8 +719,9 @@ try {
   Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"
   Show-NextSteps $configPath
 
-  # ---------- 结尾：HumansLive 的其他免费工具和商城 ----------
-  # 内容和排版来自网站（每行 kind<TAB>a<TAB>b），这里只按 kind 上色；拿不到就只打一行网址，不影响安装结果。
+  # ---------- Closing banner: other free HumansLive tools ----------
+  # Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.
+  # If it cannot be fetched, print one URL instead; the install result is unaffected.
   $text = $null
   try { $text = Invoke-RestMethod -TimeoutSec 6 "https://humanslive.ai/api/install-banner?f=codex&w=$(Get-ConsoleWidth)" } catch { }
   if (-not $text) { Write-Host ''; Write-Host '  更多免费工具和服务：https://humanslive.ai'; Write-Host '' }
@@ -725,14 +742,14 @@ try {
   Write-Host "  ${Bold}装好了，可以关掉这个窗口。$R"
   Write-Host ''
 } catch {
-  # 意料之外的错误：记下完整信息，给用户看一句话和日志位置，不打一大段红字
+  # Unexpected error: log the details and show the user one sentence and the log path, not a red stack dump
   if ("$_" -ne 'HL_FAIL') {
     Log "EXCEPTION $($_.Exception.GetType().FullName): $($_.Exception.Message)"
     Log "AT $($_.InvocationInfo.PositionMessage -replace "`r?`n", ' | ')"
     Show-Error "安装中途出了意外：$($_.Exception.Message)"
   }
 } finally {
-  # Ctrl+C 或出错退出时，连同后台下载一起停掉；已下载的部分留在缓存里，重新运行会接着下
+  # On Ctrl+C or error, stop the background download too; the partial file stays in the cache and a rerun resumes it
   Stop-Download
   Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue
 }
