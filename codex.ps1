@@ -645,16 +645,21 @@ try {
   }
   $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"", '') + $keptLines + @(
     '', '[model_providers.zhipu]', 'name = "智谱 GLM"', "base_url = `"$ZhipuBaseUrl`"", 'wire_api = "responses"', 'requires_openai_auth = true')
-  # Codex follows the system language by default; unless the user already picked one, set Simplified Chinese
-  # (the Language setting, stored under [desktop])
-  if (-not ($configLines -match '^\s*localeOverride\s*=')) {
-    $desktopAt = [array]::IndexOf($configLines, '[desktop]')
-    if ($desktopAt -ge 0) {
+  # Codex follows the system language by default; force Simplified Chinese on every run (the Language setting, stored
+  # under [desktop]): replace any other value in place, so an already-Chinese config stays byte-identical. Windows' own
+  # dialogs follow the Windows display language; there is no per-app switch for those
+  $desktopAt = [array]::IndexOf($configLines, '[desktop]')
+  if ($desktopAt -ge 0) {
+    $found = $false
+    for ($i = $desktopAt + 1; $i -lt $configLines.Count -and $configLines[$i] -notmatch '^\['; $i++) {
+      if ($configLines[$i] -match '^\s*localeOverride\s*=') { $configLines[$i] = 'localeOverride = "zh-CN"'; $found = $true }
+    }
+    if (-not $found) {
       $after = if ($desktopAt -lt $configLines.Count - 1) { $configLines[($desktopAt + 1)..($configLines.Count - 1)] } else { @() }
       $configLines = $configLines[0..$desktopAt] + @('localeOverride = "zh-CN"') + $after
     }
-    else { $configLines += @('', '[desktop]', 'localeOverride = "zh-CN"') }
   }
+  else { $configLines += @('', '[desktop]', 'localeOverride = "zh-CN"') }
   $newConfig = ($configLines -join "`n") + "`n"
   $newAuth = "{`"OPENAI_API_KEY`":`"$ZhipuApiKey`"}`n"
   $backedUp = $false

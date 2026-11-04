@@ -209,7 +209,7 @@ show_error() {
   [ -z "$LIVE" ] || printf '\r\033[K' >&2
   printf '\n  %s✗ 出错了%s\n     %s\n     %s日志：%s%s\n     %s需要帮助：把这个日志文件发到社群 https://humanslive.ai/community%s\n\n' \
     "$C_RED$C_BOLD" "$C_RESET" "$*" "$C_DIM" "$LOG_FILE" "$C_RESET" "$C_DIM" "$C_RESET" >&2
-  open -R "$LOG_FILE" 2>/dev/null || true
+  [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open -R "$LOG_FILE" 2>/dev/null || true
 }
 FAILED=""
 fail() {
@@ -419,10 +419,20 @@ install_codex_app() {
   ditto "$app_in_dmg" "$partial" </dev/null &
   spin $! "安装到「应用程序」文件夹" || { rm -rf "$partial"; hdiutil detach "$mount_point" -quiet; fail "复制到「应用程序」文件夹失败。"; }
   hdiutil detach "$mount_point" -quiet
-  rm -rf "${target:?}/$name" 2>/dev/null || fail "旧的 $name 删不掉。先把「应用程序」文件夹里的 $name 拖到废纸篓，再重新运行这行命令。"
+  # Only ever replace a (broken) Codex: an unrelated app with the same name is the user's, never deleted
+  if [ -e "$target/${name:?}" ]; then
+    if [ "$(defaults read "$target/$name/Contents/Info.plist" CFBundleIdentifier 2>/dev/null)" != "$CODEX_BUNDLE_ID" ]; then
+      rm -rf "$partial"
+      fail "「应用程序」文件夹里已经有一个不是 Codex 的 $name。把它拖到废纸篓（或改个名字），再重新运行这行命令。"
+    fi
+    rm -rf "$target/$name" 2>/dev/null || { rm -rf "$partial"; fail "旧的 $name 删不掉。先把「应用程序」文件夹里的 $name 拖到废纸篓，再重新运行这行命令。"; }
+  fi
   mv "$partial" "$target/$name"
+  INSTALLED_APP="$target/$name"
   # The broken copy found at the start lived somewhere else: remove it so only the working one is left
-  if [ -n "$BROKEN_APP" ] && [ "$BROKEN_APP" != "$target/$name" ]; then rm -rf "$BROKEN_APP" 2>/dev/null || true; fi
+  if [ -n "$BROKEN_APP" ] && [ "$BROKEN_APP" != "$target/$name" ] && ! rm -rf "$BROKEN_APP" 2>/dev/null; then
+    info "旧的 Codex（${BROKEN_APP}）删不掉，可以自己拖到废纸篓"
+  fi
 }
 
 # ---------- Preparation: system check, source race, then start the background download ----------
@@ -432,8 +442,12 @@ log "macOS $(sw_vers -productVersion) build=$(sw_vers -buildVersion) arch=$(unam
 ok "macOS $(sw_vers -productVersion) · $CHIP"
 CODEX_APP=$(find_codex_app || true)
 # An install that was interrupted (or a damaged app) still looks installed: check the signature and reinstall if broken
-BROKEN_APP=""
-if [ -n "$CODEX_APP" ] && ! codesign --verify --deep --strict "$CODEX_APP" </dev/null 2>/dev/null; then
+BROKEN_APP="" INSTALLED_APP="" app_ok=""
+if [ -n "$CODEX_APP" ]; then
+  codesign --verify --deep --strict "$CODEX_APP" </dev/null >/dev/null 2>&1 &
+  spin $! "检查已安装的 Codex" && app_ok=1 || app_ok=""
+fi
+if [ -n "$CODEX_APP" ] && [ -z "$app_ok" ]; then
   log "codex app broken, reinstalling: $CODEX_APP"
   info "上次的 Codex 没装完整，这次重新装"
   BROKEN_APP=$CODEX_APP; CODEX_APP=""
@@ -486,7 +500,16 @@ function run() {
   // Page results come back through document.title (the window title is set separately, so it is never shown)
   const evaluate = (code) => { webView.evaluateJavaScriptCompletionHandler(code, (result, error) => {}); };
   const readTitle = () => ObjC.unwrap(webView.title) || '';
+  // One create-key request per page: its result is kept in the page (window.__hlResult) until read, so a slow answer is
+  // neither sent twice nor overwritten. Only a page reload (which loses the request) leads to another one.
   const READ_STATE = `(() => {
+    if (window.__hlResult) {
+      const result = window.__hlResult;
+      if (result.startsWith('RETRY:')) window.__hlResult = window.__hlCreate = null;
+      document.title = result;
+      return;
+    }
+    if (window.__hlCreate) { document.title = 'STATE:creating'; return; }
     const token = (document.cookie.split('; ').find(c => c.startsWith('bigmodel_token_production=')) || '').split('=').slice(1).join('=');
     const ready = Boolean(token && localStorage.getItem('Bigmodel-Organization') && localStorage.getItem('Bigmodel-Project'));
     const onConsole = location.pathname.startsWith('/apikey') || location.pathname.startsWith('/usercenter');
@@ -495,45 +518,50 @@ function run() {
     if (ready && !onConsole) location.href = '/apikey/platform';
     document.title = 'STATE:' + (ready && onConsole ? 'ready' : 'waiting');
   })()`;
-  const CREATE_KEY = `(async () => {
-    try {
-      const token = (document.cookie.split('; ').find(c => c.startsWith('bigmodel_token_production=')) || '').split('=').slice(1).join('=');
-      const organization = localStorage.getItem('Bigmodel-Organization');
-      const project = localStorage.getItem('Bigmodel-Project');
-      const response = await fetch('/api/biz/v1/organization/' + organization + '/projects/' + project + '/api_keys', {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', Authorization: token, 'Bigmodel-Organization': organization, 'Bigmodel-Project': project },
-        body: JSON.stringify({ name: (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return 'Codex-' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); })(), keyType: 1, usageScene: 2 }),
-      }).then(r => r.json());
-      document.title = response.code === 200 && response.data ? 'KEY:' + response.data.apiKey + '.' + response.data.secretKey : 'ERROR:' + (response.msg || response.code);
-    } catch (e) { document.title = 'RETRY:' + e.message; }
+  const CREATE_KEY = `(() => {
+    if (window.__hlCreate) return;
+    window.__hlCreate = (async () => {
+      try {
+        const token = (document.cookie.split('; ').find(c => c.startsWith('bigmodel_token_production=')) || '').split('=').slice(1).join('=');
+        const organization = localStorage.getItem('Bigmodel-Organization');
+        const project = localStorage.getItem('Bigmodel-Project');
+        const response = await fetch('/api/biz/v1/organization/' + organization + '/projects/' + project + '/api_keys', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', Authorization: token, 'Bigmodel-Organization': organization, 'Bigmodel-Project': project },
+          body: JSON.stringify({ name: (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return 'Codex-' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); })(), keyType: 1, usageScene: 2 }),
+        }).then(r => r.json());
+        window.__hlResult = response.code === 200 && response.data ? 'KEY:' + response.data.apiKey + '.' + response.data.secretKey : 'ERROR:' + (response.msg || response.code);
+      } catch (e) { window.__hlResult = 'RETRY:' + e.message; }
+      document.title = window.__hlResult;
+    })();
   })()`;
 
   const deadline = Date.now() + 60 * 60 * 1000;
   let outcome = 'TIMEOUT';
   let lastRefresh = Date.now();
-  let attempts = 0;
+  let loadingSince = 0;
+  let requests = 0;
   while (Date.now() < deadline) {
     pumpEvents(1.5);
     if (!window.isVisible) { outcome = 'CANCELLED'; break; }
-    if (webView.isLoading) continue;
+    // Let a navigation finish first, but do not wait forever on a page whose trackers never stop loading
+    if (webView.isLoading) { loadingSince = loadingSince || Date.now(); if (Date.now() - loadingSince < 20 * 1000) continue; } else loadingSince = 0;
     evaluate(READ_STATE);
     pumpEvents(0.5);
-    if (readTitle() !== 'STATE:ready') {
-      // WeChat QR codes expire within minutes: reload every 4 minutes until the user logs in
-      if (Date.now() - lastRefresh > 4 * 60 * 1000) { webView.reload; lastRefresh = Date.now(); }
-      continue;
-    }
-    evaluate(CREATE_KEY);
-    for (let i = 0; i < 30 && !/^(KEY|ERROR|RETRY):/.test(readTitle()); i++) pumpEvents(0.5);
     const title = readTitle();
     if (title.startsWith('KEY:')) { outcome = title.slice(4); break; }
     if (title.startsWith('ERROR:')) { outcome = title; break; }
-    // The request never reached Zhipu (network error, page reloaded, no answer): wait for the page and try again
-    attempts++;
-    outcome = 'ERROR:' + (title.startsWith('RETRY:') ? title.slice(6) : 'no response');
-    if (attempts >= 3) break;
-    pumpEvents(2);
+    // The request never reached Zhipu (network error, page reloaded mid-request): try again, 3 requests at most
+    if (title.startsWith('RETRY:')) { outcome = 'ERROR:' + title.slice(6); if (requests >= 3) break; continue; }
+    if (title === 'STATE:creating') continue;
+    if (title === 'STATE:ready') {
+      if (requests >= 3) { if (outcome === 'TIMEOUT') outcome = 'ERROR:no response'; break; }
+      requests++;
+      evaluate(CREATE_KEY);
+      continue;
+    }
+    // WeChat QR codes expire within minutes: reload every 4 minutes until the user logs in
+    if (!requests && Date.now() - lastRefresh > 4 * 60 * 1000) { webView.reload; lastRefresh = Date.now(); }
   }
   window.orderOut(null);
   return outcome;
@@ -614,33 +642,43 @@ ok "智谱免费模型可以用：$MODEL"
 mkdir -p "$CODEX_HOME"
 BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
 {
-  printf 'model_provider = "zhipu"\nmodel = "%s"\n\n' "$MODEL"
+  printf 'model_provider = "zhipu"\nmodel = "%s"\n' "$MODEL"
+  kept=""
   if [ -f "$CONFIG" ]; then
-    # Drop top-level model / model_provider (before the first table) and the whole old [model_providers.zhipu] table
-    awk '
-      /^\[/ { in_table = 1; skip = ($0 == "[model_providers.zhipu]") }
+    # Drop top-level model / model_provider (before the first table) and the whole old [model_providers.zhipu] table.
+    # Blank lines left at the start and end are dropped (the parts this script adds bring their own), so a rerun
+    # writes the same bytes; everything in between, including multi-line strings, stays exactly as the user wrote it.
+    kept=$(awk '
+      { line = $0; sub(/\r$/, "", line) }
+      /^\[/ { in_table = 1; skip = (line == "[model_providers.zhipu]") }
       !in_table && /^[[:space:]]*(model|model_provider)[[:space:]]*=/ { next }
-      !skip { print }
-    ' "$CONFIG"
+      skip { next }
+      /^[[:space:]]*$/ { if (printed) blanks = blanks $0 "\n"; next }
+      { printf "%s", blanks; blanks = ""; print; printed = 1 }
+    ' "$CONFIG")
   fi
+  [ -z "$kept" ] || printf '\n%s\n' "$kept"
 } > "$WORK_DIR/config.toml"
-# Codex follows the system language by default; unless the user already picked one, set Simplified Chinese
-# (the Language setting, stored under [desktop])
-if ! grep -Eq '^[[:space:]]*localeOverride[[:space:]]*=' "$WORK_DIR/config.toml"; then
-  if grep -q '^\[desktop\]' "$WORK_DIR/config.toml"; then
-    # Match the line ending of the [desktop] line (files edited on Windows use CRLF) instead of mixing them
-    awk '{ print } /^\[desktop\]/ && !done { eol = ($0 ~ /\r$/) ? "\r" : ""; print "localeOverride = \"zh-CN\"" eol; done = 1 }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
-    mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml"
-  elif grep -q $'\r$' "$WORK_DIR/config.toml"; then
-    printf '\r\n[desktop]\r\nlocaleOverride = "zh-CN"\r\n' >> "$WORK_DIR/config.toml"
-  else
-    printf '\n[desktop]\nlocaleOverride = "zh-CN"\n' >> "$WORK_DIR/config.toml"
-  fi
-fi
-printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL" >> "$WORK_DIR/config.toml"
-# Collapse runs of blank lines: otherwise every rerun adds one more and the unchanged config gets a new backup
-awk '/^\r?$/ { if (blank++) next; print; next } { blank = 0; print }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
+# Codex follows the system language by default; force Simplified Chinese on every run (the Language setting, stored
+# under [desktop]): replace any other value in place, so an already-Chinese config stays byte-identical
+awk '
+  /^\[/ { in_desktop = ($0 ~ /^\[desktop\][ \t]*\r?$/); seen = seen || in_desktop }
+  in_desktop && /^[[:space:]]*localeOverride[[:space:]]*=/ { eol = ($0 ~ /\r$/) ? "\r" : ""; $0 = "localeOverride = \"zh-CN\"" eol; found = 1 }
+  { print }
+  END { exit found ? 0 : seen ? 2 : 3 }
+' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new" && locale_status=0 || locale_status=$?
 mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml"
+case "$locale_status" in
+  2) # Match the line ending of the [desktop] line (files edited on Windows use CRLF) instead of mixing them
+     awk '{ print } /^\[desktop\][ \t]*\r?$/ && !done { eol = ($0 ~ /\r$/) ? "\r" : ""; print "localeOverride = \"zh-CN\"" eol; done = 1 }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
+     mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml" ;;
+  3) if grep -q $'\r$' "$WORK_DIR/config.toml"; then
+       printf '\r\n[desktop]\r\nlocaleOverride = "zh-CN"\r\n' >> "$WORK_DIR/config.toml"
+     else
+       printf '\n[desktop]\nlocaleOverride = "zh-CN"\n' >> "$WORK_DIR/config.toml"
+     fi ;;
+esac
+printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL" >> "$WORK_DIR/config.toml"
 ( umask 077; printf '{"OPENAI_API_KEY":"%s"}\n' "$ZHIPU_API_KEY" > "$WORK_DIR/auth.json" )
 BACKED_UP=""
 for pair in "config.toml:$CONFIG" "auth.json:$AUTH"; do
@@ -653,6 +691,15 @@ chmod 600 "$AUTH"
 log "config written: $CONFIG"
 ok "已把 Key 和模型写进 Codex 的配置"
 [ -z "$BACKED_UP" ] || info "原来的配置已备份为 *${BACKUP_SUFFIX}"
+# Menu items macOS adds itself (Edit > AutoFill / Start Dictation, Window > Fill / Enter Full Screen…) and system panels
+# follow the app's AppleLanguages, not localeOverride, so on a non-Chinese system they stay English without this
+if [ "$(defaults read "$CODEX_BUNDLE_ID" AppleLanguages 2>/dev/null | tr -d ' \n')" != '("zh-Hans")' ]; then
+  defaults write "$CODEX_BUNDLE_ID" AppleLanguages -array zh-Hans
+  log "AppleLanguages set: $CODEX_BUNDLE_ID"
+  if [ -n "$CODEX_APP" ] && pgrep -qf "$CODEX_APP/Contents/MacOS/"; then
+    info "Codex 正开着：按 ⌘Q 退出再打开，菜单就全是中文了"
+  fi
+fi
 
 
 # ---------- Step 2: download and install Codex ----------
@@ -676,7 +723,8 @@ else
   ok "下载完成（$(mb "$(file_size "$DMG")") MB）"
   install_codex_app "$DMG"
   rm -f "$DMG" "$DMG.etag"
-  CODEX_APP=$(find_codex_app) || fail "安装后没找到 Codex App。"
+  # Use the copy just installed (a broken one that could not be removed may still come first in find_codex_app)
+  CODEX_APP=$INSTALLED_APP
   ok "Codex 已装好"
 fi
 
