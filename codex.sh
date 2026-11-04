@@ -280,6 +280,7 @@ draw_progress() {
 [ "$(uname -s)" = "Darwin" ] || fail "这个脚本只支持 Mac。Windows 请用 PowerShell 版本。"
 STEPS=3
 header "CODEX INSTALLER" "Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱"
+printf '  %s→%s 遇到问题来社群找我们：%shttps://humanslive.ai/community%s\n' "$C_BLUE" "$C_RESET" "$C_LINK" "$C_RESET" >&2
 
 APP_DIR="${CODEX_SETUP_APP_DIR:-/Applications}"
 CACHE_DIR="${CODEX_SETUP_CACHE_DIR:-$HOME/Library/Caches/HumansLive}"

@@ -620,6 +620,7 @@ function Find-FreeModel($key) {
 $Steps = 3
 try {
   Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱'
+  Write-Host "  $Blue→$R 遇到问题来社群找我们：${Link}https://humanslive.ai/community$R"
 
   # ---------- Preparation: system check, source race, then start the background download ----------
   Section '系统检测' ''
