@@ -639,7 +639,7 @@ try {
       Log "codex app running ($($running.Count) processes): closing before writing the config"
       Info 'Codex 正开着，先关掉，配置写好后会重新打开'
       foreach ($p in $running) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
-      for ($i = 0; $i -lt 20 -and ($running | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })); $i++) { Start-Sleep -Milliseconds 500 }
+      for ($i = 0; $i -lt 20 -and ($running | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }); $i++) { Start-Sleep -Milliseconds 500 }
     }
   }
   # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
