@@ -421,11 +421,48 @@ function Install-FromStore {
 }
 
 # ---------- Zhipu API key ----------
-function Find-Edge {
-  foreach ($path in @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe", "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe")) {
-    if (Test-Path $path) { return $path }
+# The login window needs a Chromium browser with a DevTools port: Edge first, then Chrome. Stripped-down Windows
+# images often remove Edge, and either may live outside the default folder, so also ask the registry (App Paths)
+function Find-LoginBrowser {
+  foreach ($exe in 'msedge.exe', 'chrome.exe') {
+    $paths = @(@('HKLM:', 'HKCU:') | ForEach-Object { (Get-ItemProperty "$_\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\$exe" -ErrorAction SilentlyContinue).'(default)' })
+    $vendor = if ($exe -eq 'msedge.exe') { 'Microsoft\Edge' } else { 'Google\Chrome' }
+    $paths += @("${env:ProgramFiles(x86)}", $env:ProgramFiles, $env:LOCALAPPDATA) | ForEach-Object { "$_\$vendor\Application\$exe" }
+    foreach ($path in $paths) { if ($path -and (Test-Path $path.Trim('"'))) { return $path.Trim('"') } }
   }
   return $null
+}
+
+# No Edge or Chrome: install Edge with Microsoft's own online installer (about 2 MB, reachable from China), after
+# checking it is signed by Microsoft. It installs silently; Windows may ask once for permission
+function Install-Edge {
+  $setup = Join-Path $WorkDir 'MicrosoftEdgeSetup.exe'
+  Info '这台电脑没有 Edge 浏览器（精简版 Windows 常见），先从微软官网装一个，扫码登录要用'
+  $job = Start-Job -ArgumentList $setup -ScriptBlock {
+    param($f)
+    try {
+      Invoke-WebRequest 'https://go.microsoft.com/fwlink/?linkid=2108834&Channel=Stable&language=zh-cn' -OutFile $f -UseBasicParsing -TimeoutSec 120
+      $sig = Get-AuthenticodeSignature $f
+      "$($sig.Status)|$($sig.SignerCertificate.Subject)"
+    } catch { "ERROR|$($_.Exception.Message)" }
+  }
+  while ($job.State -eq 'Running') { Wait-Tick 0.3 '下载 Edge 安装器' $Script:Started }
+  Clear-Line
+  $check = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
+  Remove-Job $job -Force -ErrorAction SilentlyContinue
+  Log "edge setup check: $check"
+  $status, $subject = "$check" -split '\|', 2
+  if ($status -ne 'Valid' -or $subject -notmatch 'O=Microsoft Corporation') { Remove-Item $setup -Force -ErrorAction SilentlyContinue; return }
+  Todo '如果弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
+  try { $process = Start-Process $setup -PassThru -ArgumentList '/silent /install' } catch { Log "edge setup declined: $($_.Exception.Message)"; return }
+  $since = Get-Date
+  while (-not $process.HasExited) { Wait-Tick 0.3 '安装 Edge' $since }
+  Clear-Line
+  # The online installer exits before the browser files are all in place, so wait for msedge.exe to show up
+  for ($i = 0; $i -lt 120 -and -not (Find-LoginBrowser); $i++) { Wait-Tick 0.5 '安装 Edge' $since }
+  Clear-Line
+  Log "edge setup exit=$($process.ExitCode) browser=$(Find-LoginBrowser)"
+  Remove-Item $setup -Force -ErrorAction SilentlyContinue
 }
 
 function Invoke-PageScript($socket, [ref]$nextId, $expression) {
@@ -470,10 +507,11 @@ $CreateKeyScript = @'
 '@
 
 function Get-ZhipuKeyAutomatically {
-  $edge = Find-Edge
-  if (-not $edge) { return 'ERROR:没有找到 Edge' }
-  $profileDir = Join-Path $WorkDir 'edge-profile'
-  $edgeProcess = Start-Process -FilePath $edge -PassThru -ArgumentList @(
+  $browser = Find-LoginBrowser
+  if (-not $browser) { Install-Edge; $browser = Find-LoginBrowser }
+  if (-not $browser) { return 'ERROR:没有找到 Edge 浏览器，自动安装也没成功' }
+  $profileDir = Join-Path $WorkDir $(if ($browser -like '*chrome.exe') { 'chrome-profile' } else { 'edge-profile' })
+  $edgeProcess = Start-Process -FilePath $browser -PassThru -ArgumentList @(
     "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
     "--app=$ZhipuLoginUrl", '--window-size=1100,800')
   try {
@@ -563,7 +601,7 @@ try {
   Section '系统检测' ''
   $os = Get-CimInstance Win32_OperatingSystem
   Log "os=$($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE ps=$($PSVersionTable.PSVersion) console=$ConsoleClass fancy=$Fancy live=$Live"
-  Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) edge=$(Find-Edge)"
+  Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) browser=$(Find-LoginBrowser)"
   Ok "$($os.Caption -replace 'Microsoft ', '') · $(if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM' } else { 'x64' })"
   $codex = Get-Codex
   $source = $null
