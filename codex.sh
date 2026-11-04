@@ -15,7 +15,7 @@ log() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | sed $'s/\033\\[[0-9;]*m//g'
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 OPENAI_TEAM_ID="2DC432GLL2"
 CODEX_BUNDLE_ID="com.openai.codex"
-ZHIPU_BASE_URL="https://open.bigmodel.cn/api/v1"
+ZHIPU_BASE_URL="${CODEX_SETUP_ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/v1}"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
 WORK_DIR="$(mktemp -d -t codex-setup)"
@@ -300,8 +300,8 @@ trap 'printf "\n\n  已停止。重新运行这行命令会接着之前的进度
 # ---------- Codex app: if missing, download in the background while the user scans the QR code ----------
 find_codex_app() {
   local app
-  for app in "$APP_DIR/Codex.app" "$APP_DIR/ChatGPT.app" /Applications/Codex.app /Applications/ChatGPT.app \
-    "$HOME/Applications/Codex.app" "$HOME/Applications/ChatGPT.app"; do
+  # APP_DIR is /Applications unless CODEX_SETUP_APP_DIR overrides it (the installer tests use a temp folder)
+  for app in "$APP_DIR/Codex.app" "$APP_DIR/ChatGPT.app" "$HOME/Applications/Codex.app" "$HOME/Applications/ChatGPT.app"; do
     if [ -d "$app" ] && [ "$(defaults read "$app/Contents/Info.plist" CFBundleIdentifier 2>/dev/null)" = "$CODEX_BUNDLE_ID" ]; then
       echo "$app"; return 0
     fi
@@ -394,7 +394,7 @@ download_note() {
 }
 
 install_codex_app() {
-  local dmg=$1 mount_point app_in_dmg team need target
+  local dmg=$1 mount_point app_in_dmg team need target name partial
   mount_point=$(hdiutil attach -nobrowse -readonly "$dmg" | tail -1 | awk -F'\t' '{print $NF}')
   app_in_dmg=$(ls -d "$mount_point"/*.app | head -1)
   codesign --verify --deep --strict "$app_in_dmg" </dev/null 2>/dev/null &
@@ -413,9 +413,16 @@ install_codex_app() {
   }
   # Standard (non-admin) accounts cannot write /Applications; fall back to ~/Applications
   target="$APP_DIR"; [ -w "$target" ] || { target="$HOME/Applications"; mkdir -p "$target"; }
-  ditto "$app_in_dmg" "$target/$(basename "$app_in_dmg")" </dev/null &
-  spin $! "安装到「应用程序」文件夹" || { hdiutil detach "$mount_point" -quiet; fail "复制到「应用程序」文件夹失败。"; }
+  # Copy under a hidden name, then swap it in: an interrupted copy never looks installed, and a rerun starts clean
+  name=$(basename "$app_in_dmg"); partial="$target/.$name.installing"
+  rm -rf "$partial"
+  ditto "$app_in_dmg" "$partial" </dev/null &
+  spin $! "安装到「应用程序」文件夹" || { rm -rf "$partial"; hdiutil detach "$mount_point" -quiet; fail "复制到「应用程序」文件夹失败。"; }
   hdiutil detach "$mount_point" -quiet
+  rm -rf "${target:?}/$name" 2>/dev/null || fail "旧的 $name 删不掉。先把「应用程序」文件夹里的 $name 拖到废纸篓，再重新运行这行命令。"
+  mv "$partial" "$target/$name"
+  # The broken copy found at the start lived somewhere else: remove it so only the working one is left
+  if [ -n "$BROKEN_APP" ] && [ "$BROKEN_APP" != "$target/$name" ]; then rm -rf "$BROKEN_APP" 2>/dev/null || true; fi
 }
 
 # ---------- Preparation: system check, source race, then start the background download ----------
@@ -424,6 +431,13 @@ if [ "$(uname -m)" = "arm64" ]; then CHIP="Apple 芯片"; else CHIP="Intel 芯�
 log "macOS $(sw_vers -productVersion) build=$(sw_vers -buildVersion) arch=$(uname -m) shell=$BASH_VERSION term=${TERM_PROGRAM:-?} live=${LIVE:-0} proxy=$([ -n "${https_proxy:-${HTTPS_PROXY:-}}" ] && echo 1 || echo 0)"
 ok "macOS $(sw_vers -productVersion) · $CHIP"
 CODEX_APP=$(find_codex_app || true)
+# An install that was interrupted (or a damaged app) still looks installed: check the signature and reinstall if broken
+BROKEN_APP=""
+if [ -n "$CODEX_APP" ] && ! codesign --verify --deep --strict "$CODEX_APP" </dev/null 2>/dev/null; then
+  log "codex app broken, reinstalling: $CODEX_APP"
+  info "上次的 Codex 没装完整，这次重新装"
+  BROKEN_APP=$CODEX_APP; CODEX_APP=""
+fi
 if [ -n "$CODEX_APP" ]; then
   log "codex already installed: $CODEX_APP $(defaults read "$CODEX_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)"
   ok "已经装过 Codex，这次不用下载"
@@ -475,8 +489,11 @@ function run() {
   const READ_STATE = `(() => {
     const token = (document.cookie.split('; ').find(c => c.startsWith('bigmodel_token_production=')) || '').split('=').slice(1).join('=');
     const ready = Boolean(token && localStorage.getItem('Bigmodel-Organization') && localStorage.getItem('Bigmodel-Project'));
-    if (ready && !location.pathname.startsWith('/apikey') && !location.pathname.startsWith('/usercenter')) location.href = '/apikey/platform';
-    document.title = 'STATE:' + (ready ? 'ready' : 'waiting');
+    const onConsole = location.pathname.startsWith('/apikey') || location.pathname.startsWith('/usercenter');
+    // Report ready only once we are on a console page: calling the API while the page is navigating
+    // makes WebKit cancel the request ("Load failed")
+    if (ready && !onConsole) location.href = '/apikey/platform';
+    document.title = 'STATE:' + (ready && onConsole ? 'ready' : 'waiting');
   })()`;
   const CREATE_KEY = `(async () => {
     try {
@@ -489,15 +506,17 @@ function run() {
         body: JSON.stringify({ name: (() => { const d = new Date(), p = n => String(n).padStart(2, '0'); return 'Codex-' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); })(), keyType: 1, usageScene: 2 }),
       }).then(r => r.json());
       document.title = response.code === 200 && response.data ? 'KEY:' + response.data.apiKey + '.' + response.data.secretKey : 'ERROR:' + (response.msg || response.code);
-    } catch (e) { document.title = 'ERROR:' + e.message; }
+    } catch (e) { document.title = 'RETRY:' + e.message; }
   })()`;
 
   const deadline = Date.now() + 60 * 60 * 1000;
   let outcome = 'TIMEOUT';
   let lastRefresh = Date.now();
+  let attempts = 0;
   while (Date.now() < deadline) {
     pumpEvents(1.5);
     if (!window.isVisible) { outcome = 'CANCELLED'; break; }
+    if (webView.isLoading) continue;
     evaluate(READ_STATE);
     pumpEvents(0.5);
     if (readTitle() !== 'STATE:ready') {
@@ -506,10 +525,15 @@ function run() {
       continue;
     }
     evaluate(CREATE_KEY);
-    for (let i = 0; i < 30 && !/^(KEY|ERROR):/.test(readTitle()); i++) pumpEvents(0.5);
+    for (let i = 0; i < 30 && !/^(KEY|ERROR|RETRY):/.test(readTitle()); i++) pumpEvents(0.5);
     const title = readTitle();
-    outcome = title.startsWith('KEY:') ? title.slice(4) : (title || 'ERROR:no response');
-    break;
+    if (title.startsWith('KEY:')) { outcome = title.slice(4); break; }
+    if (title.startsWith('ERROR:')) { outcome = title; break; }
+    // The request never reached Zhipu (network error, page reloaded, no answer): wait for the page and try again
+    attempts++;
+    outcome = 'ERROR:' + (title.startsWith('RETRY:') ? title.slice(6) : 'no response');
+    if (attempts >= 3) break;
+    pumpEvents(2);
   }
   window.orderOut(null);
   return outcome;
@@ -599,7 +623,6 @@ BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
       !skip { print }
     ' "$CONFIG"
   fi
-  printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL"
 } > "$WORK_DIR/config.toml"
 # Codex follows the system language by default; unless the user already picked one, set Simplified Chinese
 # (the Language setting, stored under [desktop])
@@ -614,6 +637,10 @@ if ! grep -Eq '^[[:space:]]*localeOverride[[:space:]]*=' "$WORK_DIR/config.toml"
     printf '\n[desktop]\nlocaleOverride = "zh-CN"\n' >> "$WORK_DIR/config.toml"
   fi
 fi
+printf '\n[model_providers.zhipu]\nname = "智谱 GLM"\nbase_url = "%s"\nwire_api = "responses"\nrequires_openai_auth = true\n' "$ZHIPU_BASE_URL" >> "$WORK_DIR/config.toml"
+# Collapse runs of blank lines: otherwise every rerun adds one more and the unchanged config gets a new backup
+awk '/^\r?$/ { if (blank++) next; print; next } { blank = 0; print }' "$WORK_DIR/config.toml" > "$WORK_DIR/config.toml.new"
+mv "$WORK_DIR/config.toml.new" "$WORK_DIR/config.toml"
 ( umask 077; printf '{"OPENAI_API_KEY":"%s"}\n' "$ZHIPU_API_KEY" > "$WORK_DIR/auth.json" )
 BACKED_UP=""
 for pair in "config.toml:$CONFIG" "auth.json:$AUTH"; do
