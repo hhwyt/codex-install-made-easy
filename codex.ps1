@@ -422,15 +422,16 @@ function Install-FromStore {
 
 # ---------- Zhipu API key ----------
 # The login window needs a Chromium browser with a DevTools port: Edge first, then Chrome. Stripped-down Windows
-# images often remove Edge, and either may live outside the default folder, so also ask the registry (App Paths)
-function Find-LoginBrowser {
+# images often remove Edge, and either may live outside the default folder, so also ask the registry (App Paths).
+# Returns every browser found, so a blocked or crashing Edge can fall back to Chrome
+function Find-LoginBrowsers {
   foreach ($exe in 'msedge.exe', 'chrome.exe') {
     $paths = @(@('HKLM:', 'HKCU:') | ForEach-Object { (Get-ItemProperty "$_\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\$exe" -ErrorAction SilentlyContinue).'(default)' })
     $vendor = if ($exe -eq 'msedge.exe') { 'Microsoft\Edge' } else { 'Google\Chrome' }
     $paths += @("${env:ProgramFiles(x86)}", $env:ProgramFiles, $env:LOCALAPPDATA) | ForEach-Object { "$_\$vendor\Application\$exe" }
-    foreach ($path in $paths) { if ($path -and (Test-Path $path.Trim('"'))) { return $path.Trim('"') } }
+    $found = $paths | Where-Object { $_ -and (Test-Path $_.Trim('"')) } | Select-Object -First 1
+    if ($found) { $found.Trim('"') }
   }
-  return $null
 }
 
 # No Edge or Chrome: install Edge with Microsoft's own online installer (about 2 MB, reachable from China), after
@@ -459,9 +460,9 @@ function Install-Edge {
   while (-not $process.HasExited) { Wait-Tick 0.3 '安装 Edge' $since }
   Clear-Line
   # The online installer exits before the browser files are all in place, so wait for msedge.exe to show up
-  for ($i = 0; $i -lt 120 -and -not (Find-LoginBrowser); $i++) { Wait-Tick 0.5 '安装 Edge' $since }
+  for ($i = 0; $i -lt 120 -and -not (Find-LoginBrowsers); $i++) { Wait-Tick 0.5 '安装 Edge' $since }
   Clear-Line
-  Log "edge setup exit=$($process.ExitCode) browser=$(Find-LoginBrowser)"
+  Log "edge setup exit=$($process.ExitCode) browsers=$(Find-LoginBrowsers)"
   Remove-Item $setup -Force -ErrorAction SilentlyContinue
 }
 
@@ -507,9 +508,31 @@ $CreateKeyScript = @'
 '@
 
 function Get-ZhipuKeyAutomatically {
-  $browser = Find-LoginBrowser
-  if (-not $browser) { Install-Edge; $browser = Find-LoginBrowser }
-  if (-not $browser) { return 'ERROR:没有找到 Edge 浏览器，自动安装也没成功' }
+  $browsers = @(Find-LoginBrowsers)
+  if (-not $browsers) { Install-Edge; $browsers = @(Find-LoginBrowsers) }
+  if (-not $browsers) { return 'ERROR:没有找到 Edge 浏览器，自动安装也没成功' }
+  foreach ($browser in $browsers) {
+    $outcome = Get-ZhipuKeyWithBrowser $browser
+    if ($outcome -notlike 'WINDOW:*') { return $outcome }
+  }
+  return $outcome
+}
+
+# The login window never connected: find out why from the browser process, its DevTools port, the pages it shows and
+# the browser's admin policy (company and school PCs can switch remote debugging off), and log it all
+function Get-LoginWindowProblem($browser, $process, $lastError) {
+  $vendor = if ($browser -like '*chrome.exe') { 'Google\Chrome' } else { 'Microsoft\Edge' }
+  $policy = @('HKLM:', 'HKCU:') | ForEach-Object { (Get-ItemProperty "$_\SOFTWARE\Policies\$vendor" -ErrorAction SilentlyContinue).RemoteDebuggingAllowed } | Where-Object { $null -ne $_ } | Select-Object -First 1
+  $pages = try { (@(Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/list" -TimeoutSec 2) | ForEach-Object { $_.url }) -join ' ' } catch { "no port ($($_.Exception.Message))" }
+  $exited = $process.HasExited
+  Log "login window failed: browser=$browser exited=$exited exit=$(if ($exited) { $process.ExitCode }) policy=$policy pages=$pages last=$lastError"
+  if ("$policy" -eq '0') { return 'WINDOW:POLICY' }
+  if ($pages -match 'chrome-error://') { return 'WINDOW:NETWORK' }
+  if ($exited -and $pages -like 'no port*') { return 'WINDOW:EXITED' }
+  return 'WINDOW:NO_CONNECTION'
+}
+
+function Get-ZhipuKeyWithBrowser($browser) {
   $profileDir = Join-Path $WorkDir $(if ($browser -like '*chrome.exe') { 'chrome-profile' } else { 'edge-profile' })
   $edgeProcess = Start-Process -FilePath $browser -PassThru -ArgumentList @(
     "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
@@ -526,13 +549,14 @@ function Get-ZhipuKeyAutomatically {
             $newSocket.ConnectAsync([Uri]$url, [Threading.CancellationToken]::None).Wait()
             return $newSocket
           }
-        } catch { }
+        } catch { $Script:LastConnectError = $_.Exception.Message }
         Start-Sleep -Milliseconds 500
       }
       return $null
     }
+    $Script:LastConnectError = $null
     $socket = & $connectToPage
-    if (-not $socket) { return 'ERROR:登录窗口没有打开' }
+    if (-not $socket) { return Get-LoginWindowProblem $browser $edgeProcess $Script:LastConnectError }
     $nextId = 1
     $loginSince = Get-Date
     $deadline = (Get-Date).AddMinutes(60)
@@ -601,7 +625,7 @@ try {
   Section '系统检测' ''
   $os = Get-CimInstance Win32_OperatingSystem
   Log "os=$($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE ps=$($PSVersionTable.PSVersion) console=$ConsoleClass fancy=$Fancy live=$Live"
-  Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) browser=$(Find-LoginBrowser)"
+  Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) browsers=$(Find-LoginBrowsers)"
   Ok "$($os.Caption -replace 'Microsoft ', '') · $(if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM' } else { 'x64' })"
   $codex = Get-Codex
   $source = $null
@@ -658,6 +682,10 @@ try {
         switch -Wildcard ($outcome) {
           'CANCELLED' { Fail '智谱登录窗口被关掉了。重新运行这行命令，扫码登录就行。' }
           'TIMEOUT'   { Fail '一个小时内没有扫码登录。重新运行这行命令，扫码登录就行。' }
+          'WINDOW:POLICY'  { Fail '这台电脑的管理策略不允许程序打开浏览器登录窗口（公司、学校的电脑常见），没法自动登录智谱。换一台自己的电脑，或者请电脑管理员放开 Edge / Chrome 的 RemoteDebuggingAllowed 策略。' }
+          'WINDOW:EXITED'  { Fail '智谱登录窗口刚打开就关掉了，多半是被安全软件（360、火绒、电脑管家等）拦住了。先暂时退出安全软件，再重新运行这行命令。' }
+          'WINDOW:NETWORK' { Fail '登录窗口打不开智谱网站（open.bigmodel.cn）。先在浏览器里试试能不能打开这个网址，网络正常后再重新运行这行命令。' }
+          'WINDOW:*'       { Fail '智谱登录窗口没能连上，多半是被安全软件（360、火绒、电脑管家等）拦住了。先暂时退出安全软件，再重新运行这行命令；还不行的话，把下面的日志发给我们，我们来修。' }
           default     { Fail ('自动创建 API Key 没成功（' + ($outcome -replace '^ERROR:', '') + '），可能是智谱的网站改版了。重新运行这行命令再试一次；还不行的话，把下面的日志发给我们，我们来修。') }
         }
       }
