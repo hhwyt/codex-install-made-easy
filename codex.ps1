@@ -335,6 +335,9 @@ $CodexZhLauncher = {
 # whatever the Language setting says. So start Codex with a local DevTools port, patch that one switch in every
 # Codex page, and stay alive while Codex runs (the patch only holds while the DevTools connection is open).
 # Nothing runs in the background: no service, no startup entry; after a restart it does nothing until opened again.
+# Whatever goes wrong, Codex still opens, at worst in English: the shortcut opens Codex directly when this script
+# cannot run, every failure here falls back to a plain launch, and if Codex does not render with the patch, it is
+# reopened without it and the patch stays off for that Codex version (disabled-<version>.txt).
 # -InstallShortcuts: create the Codex shortcuts (named "Codex" plus the Chinese for Chinese) on the desktop and in the Start menu, then return.
 param([switch]$InstallShortcuts)
 $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -357,7 +360,9 @@ function Save-Shortcut($path) {
   $temporary = Join-Path $env:TEMP 'humanslive-codex-zh.lnk'
   $link = (New-Object -ComObject WScript.Shell).CreateShortcut($temporary)
   $link.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $link.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+  # If this script cannot run at all (deleted, or blocked by a policy), open Codex directly
+  $quotedScript = $PSCommandPath -replace "'", "''"
+  $link.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"try { & '$quotedScript' } catch { Start-Process 'shell:AppsFolder\$appUserModelId' }`""
   $link.WindowStyle = 7   # Minimized, so no PowerShell window shows up
   $link.IconLocation = "$icon,0"
   $link.Description = 'Codex'
@@ -372,7 +377,12 @@ try {
   }
 } catch { Log "shortcut update failed: $($_.Exception.Message)" }
 
-Add-Type @'
+function Open-CodexPlain { Start-Process "shell:AppsFolder\$appUserModelId" }
+$disabledFile = Join-Path $Dir "disabled-$($package.Version).txt"
+if (Test-Path -LiteralPath $disabledFile) { Log "patch disabled for codex $($package.Version): opening it plainly"; Open-CodexPlain; exit }
+
+try {
+Add-Type -ErrorAction Stop -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class CodexActivator {
@@ -388,6 +398,7 @@ public static class CodexActivator {
   }
 }
 '@
+} catch { Log "activator failed: $($_.Exception.Message)"; Open-CodexPlain; exit 1 }
 
 # Runs at document start in every Codex page, before Codex's own scripts. The Statsig SDK stores its clients on
 # window.__STATSIG__ (it reuses an existing object, reassigns the property whenever a client registers, and sets
@@ -398,17 +409,22 @@ $Patch = @'
   if (window.__humansliveZh) return;
   window.__humansliveZh = true;
   const LAYER = '72216192';
+  // Every hook hands Codex exactly what it would have got and only then tries the patch, inside try/catch: if
+  // anything here breaks on a future Codex, the switch simply stays off
   const fixValue = (value) => {
-    if (!value || typeof value.get !== 'function' || value.__humansliveZh) return value;
-    const get = value.get;
-    try { value.get = function (key, fallback) { return key === 'enable_i18n' ? true : get.call(this, key, fallback); }; value.__humansliveZh = true; } catch (e) { }
-    return value;
+    try {
+      if (!value || typeof value.get !== 'function' || value.__humansliveZh) return;
+      const get = value.get;
+      value.get = function (key, fallback) { return key === 'enable_i18n' ? true : get.call(this, key, fallback); };
+      value.__humansliveZh = true;
+    } catch (e) { }
   };
   const wrap = (original) => {
     if (typeof original !== 'function' || original.__humansliveZh) return original;
     const wrapped = function (layerName, options) {
       const value = original.apply(this, arguments);
-      return layerName === LAYER ? fixValue(value) : value;
+      if (layerName === LAYER) fixValue(value);
+      return value;
     };
     wrapped.__humansliveZh = true;
     return wrapped;
@@ -420,50 +436,62 @@ $Patch = @'
     client.__humansliveZh = true;
     for (const name of ['getLayer', 'getDynamicConfig']) {
       let current = wrap(client[name]);
-      Object.defineProperty(client, name, { configurable: true, get: () => current, set: (next) => { current = wrap(next); } });
+      Object.defineProperty(client, name, { configurable: true, get: () => current, set: (next) => { current = next; try { current = wrap(next); } catch (e) { } } });
     }
   };
+  const fixAll = (root) => {
+    try {
+      fixClient(root.firstInstance);
+      if (root.instances) Object.values(root.instances).forEach(fixClient);
+    } catch (e) { }
+  };
   const fixRoot = (root) => {
-    if (!root || typeof root !== 'object') return root;
-    if (!root.__humansliveZh) {
+    try {
+      if (!root || typeof root !== 'object' || root.__humansliveZh) return;
       root.__humansliveZh = true;
       for (const key of ['firstInstance', 'instances']) {
         let current = root[key];
         Object.defineProperty(root, key, { configurable: true, enumerable: true, get: () => current, set: (next) => { current = next; fixAll(root); } });
       }
-    }
-    fixAll(root);
-    return root;
+      fixAll(root);
+    } catch (e) { }
   };
-  const fixAll = (root) => {
-    fixClient(root.firstInstance);
-    if (root.instances) Object.values(root.instances).forEach(fixClient);
-  };
-  let root = fixRoot(window.__STATSIG__);
-  Object.defineProperty(window, '__STATSIG__', { configurable: true, get: () => root, set: (next) => { root = fixRoot(next); } });
+  let root = window.__STATSIG__;
+  fixRoot(root);
+  try { Object.defineProperty(window, '__STATSIG__', { configurable: true, get: () => root, set: (next) => { root = next; fixRoot(next); } }); } catch (e) { }
 })();
 '@
 
 function Send-Cdp($socket, $sessionId, $method, $params) {
   $Script:CdpId++
+  $id = $Script:CdpId
   $message = @{ id = $Script:CdpId; method = $method; params = $params }
   if ($sessionId) { $message.sessionId = $sessionId }
   $message = $message | ConvertTo-Json -Depth 5 -Compress
   $bytes = [Text.Encoding]::UTF8.GetBytes($message)
   $socket.SendAsync([ArraySegment[byte]]::new($bytes), 'Text', $true, [Threading.CancellationToken]::None).Wait()
+  $id
 }
-# Returns $null once Codex has quit: a killed Codex does not always close the connection, so also watch its process
+# Returns the next message, 'TICK' after 2 s without one, or $null once Codex has quit (a killed Codex does not always
+# close the connection, so also watch its process). A receive that times out stays pending for the next call
+$Script:Buffer = New-Object byte[] 65536
+$Script:Received = [IO.MemoryStream]::new()
+$Script:Pending = $null
 function Receive-Cdp($socket) {
-  $buffer = New-Object byte[] 65536
-  $text = ''
-  do {
-    $task = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), [Threading.CancellationToken]::None)
-    while (-not $task.Wait(2000)) { if (-not (Get-Process -Id $codexProcessId -ErrorAction SilentlyContinue)) { return $null } }
-    $received = $task.Result
+  while ($true) {
+    if (-not $Script:Pending) { $Script:Pending = $socket.ReceiveAsync([ArraySegment[byte]]::new($Script:Buffer), [Threading.CancellationToken]::None) }
+    if (-not $Script:Pending.Wait(2000)) {
+      if (-not (Get-Process -Id $codexProcessId -ErrorAction SilentlyContinue)) { return $null }
+      return 'TICK'
+    }
+    $received = $Script:Pending.Result; $Script:Pending = $null
     if ($received.MessageType -eq 'Close') { return $null }
-    $text += [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count)
-  } while (-not $received.EndOfMessage)
-  $text | ConvertFrom-Json
+    $Script:Received.Write($Script:Buffer, 0, $received.Count)
+    if ($received.EndOfMessage) {
+      $text = [Text.Encoding]::UTF8.GetString($Script:Received.ToArray()); $Script:Received.SetLength(0)
+      return ($text | ConvertFrom-Json)
+    }
+  }
 }
 function Get-CodexProcesses($appDir) {
   @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($appDir, [StringComparison]::OrdinalIgnoreCase) -and $_.Name -notlike 'codex-windows-sandbox-service*' })
@@ -472,7 +500,7 @@ function Get-CodexProcesses($appDir) {
 
 # Already running from this launcher: just bring Codex to the front
 $mutex = [Threading.Mutex]::new($false, 'Local\HumansLiveCodexZh')
-if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; [CodexActivator]::Activate($appUserModelId, '') | Out-Null; exit }
+if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; Open-CodexPlain; exit }
 Set-Content -LiteralPath $LogFile -Value "$(Get-Date -Format s) start" -Encoding UTF8
 
 try {
@@ -498,29 +526,54 @@ try {
 } catch {
   Log "launch failed: $($_.Exception.Message)"
   # Never leave the user without Codex: if it is not running, open it the normal way (English where OpenAI is unreachable)
-  if (-not (Get-CodexProcesses $appDir)) { try { [CodexActivator]::Activate($appUserModelId, '') | Out-Null; Log 'opened codex without the patch' } catch { Log "open failed: $($_.Exception.Message)" } }
+  if (-not (Get-CodexProcesses $appDir)) { Open-CodexPlain; Log 'opened codex without the patch' }
   exit 1
 }
 
-# One browser-wide connection: every new page pauses until the patch is registered, then runs. A reload during
-# Codex's startup makes it fail to start, so a page that was already running is patched in place instead.
-# The patch holds while this connection is open; it closes when Codex quits, and so does this launcher
+# One browser-wide connection: every new page pauses until the patch is registered, then runs (if this script dies
+# first, Chromium resumes the page by itself). A reload during Codex's startup makes it fail to start, so a page that
+# was already running is patched in place instead. The patch holds while this connection is open; it closes when
+# Codex quits, and so does this launcher.
+# Health check: a Codex window must show its UI within 60 s. If it does not, assume the patch broke this Codex
+# version: turn the patch off for this version and reopen Codex without it
+function Disable-Patch($reason) {
+  Log "patch disabled: $reason"
+  try { Set-Content -LiteralPath $disabledFile -Value $reason } catch { }
+  foreach ($p in Get-CodexProcesses $appDir) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
+  for ($i = 0; $i -lt 20 -and (Get-CodexProcesses $appDir); $i++) { Start-Sleep -Milliseconds 500 }
+  Open-CodexPlain
+}
+$HealthScript = "document.readyState === 'complete' && document.body !== null && document.body.innerText.trim().length > 0"
 try {
   $Script:CdpId = 0
-  Send-Cdp $socket $null 'Target.setAutoAttach' @{ autoAttach = $true; waitForDebuggerOnStart = $true; flatten = $true }
-  while ($message = Receive-Cdp $socket) {
+  $pages = @(); $attachedAt = $null; $healthy = $false; $probeIds = @{}; $probedAt = [datetime]::MinValue
+  Send-Cdp $socket $null 'Target.setAutoAttach' @{ autoAttach = $true; waitForDebuggerOnStart = $true; flatten = $true } | Out-Null
+  while ($null -ne ($message = Receive-Cdp $socket)) {
+    if (-not $healthy -and $pages) {
+      if ($message -isnot [string] -and $message.id -and $probeIds.ContainsKey([int]$message.id) -and $message.result.result.value -eq $true) {
+        $healthy = $true; Log "codex ui is up after $([int]((Get-Date) - $attachedAt).TotalSeconds) s"
+      } elseif (((Get-Date) - $attachedAt).TotalSeconds -gt 60) {
+        Disable-Patch "codex $($package.Version) showed no UI within 60 s"; exit 1
+      } elseif (((Get-Date) - $probedAt).TotalSeconds -ge 2) {
+        foreach ($page in $pages) { $probeIds[(Send-Cdp $socket $page 'Runtime.evaluate' @{ expression = $HealthScript; returnByValue = $true })] = $true }
+        $probedAt = Get-Date
+      }
+    }
+    if ($message -is [string]) { continue }
     if ($message.error) { Log "cdp error: $($message.error.message)" }
     if ($message.method -ne 'Target.attachedToTarget') { continue }
     $sessionId = $message.params.sessionId; $target = $message.params.targetInfo; $paused = $message.params.waitingForDebugger
     if ($target.type -eq 'page') {
-      Send-Cdp $socket $sessionId 'Page.enable' @{ }
-      Send-Cdp $socket $sessionId 'Page.addScriptToEvaluateOnNewDocument' @{ source = $Patch }
-      if (-not $paused) { Send-Cdp $socket $sessionId 'Runtime.evaluate' @{ expression = $Patch } }
+      Send-Cdp $socket $sessionId 'Page.enable' @{ } | Out-Null
+      Send-Cdp $socket $sessionId 'Page.addScriptToEvaluateOnNewDocument' @{ source = $Patch } | Out-Null
+      if (-not $paused) { Send-Cdp $socket $sessionId 'Runtime.evaluate' @{ expression = $Patch } | Out-Null }
+      if (-not $pages) { $attachedAt = Get-Date }
+      $pages += $sessionId
       Log "patched page $($target.url) paused=$paused"
     }
-    if ($paused) { Send-Cdp $socket $sessionId 'Runtime.runIfWaitingForDebugger' @{ } }
+    if ($paused) { Send-Cdp $socket $sessionId 'Runtime.runIfWaitingForDebugger' @{ } | Out-Null }
   }
-} catch { Log "connection ended: $($_.Exception.InnerException.Message)" }
+} catch { Log "connection ended: $($_.Exception.Message)" }
 Log 'codex closed'
 }
 function Install-CodexZh {
