@@ -637,6 +637,14 @@ else
 fi
 ok "智谱免费模型可以用：$MODEL"
 
+# A running Codex reads its config, key and language only at startup, so quit it before writing; it is reopened at the end
+if [ -n "$CODEX_APP" ] && pgrep -qf "$CODEX_APP/Contents/MacOS/"; then
+  log "codex app running: quitting before writing the config"
+  info "Codex 正开着，先关掉，配置写好后会重新打开"
+  osascript -e "tell application id \"$CODEX_BUNDLE_ID\" to quit" </dev/null >/dev/null 2>&1 || true
+  for _ in $(seq 20); do pgrep -qf "$CODEX_APP/Contents/MacOS/" || break; sleep 0.5; done
+  pkill -9 -f "$CODEX_APP/Contents/MacOS/" 2>/dev/null || true
+fi
 # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
 # Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content changes.
 mkdir -p "$CODEX_HOME"
@@ -696,9 +704,6 @@ ok "已把 Key 和模型写进 Codex 的配置"
 if [ "$(defaults read "$CODEX_BUNDLE_ID" AppleLanguages 2>/dev/null | tr -d ' \n')" != '("zh-Hans")' ]; then
   defaults write "$CODEX_BUNDLE_ID" AppleLanguages -array zh-Hans
   log "AppleLanguages set: $CODEX_BUNDLE_ID"
-  if [ -n "$CODEX_APP" ] && pgrep -qf "$CODEX_APP/Contents/MacOS/"; then
-    info "Codex 正开着：按 ⌘Q 退出再打开，菜单就全是中文了"
-  fi
 fi
 
 

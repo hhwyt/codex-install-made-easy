@@ -629,6 +629,19 @@ try {
     if (-not $Model) { Fail "智谱免费模型暂时不可用（HTTP $Script:LastStatus），请稍后重新运行这行命令。" }
   }
   Ok "智谱免费模型可以用：$Model"
+  # A running Codex reads its config, key and language only at startup, so close it before writing; Open-Codex starts
+  # it again at the end. The sandbox service lives in the same package but runs as SYSTEM and stays
+  if ($codex) {
+    $appDir = Join-Path $codex.Package.InstallLocation 'app\'
+    $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.ExecutablePath -and $_.ExecutablePath.StartsWith($appDir, [StringComparison]::OrdinalIgnoreCase) -and $_.Name -notlike 'codex-windows-sandbox-service*' })
+    if ($running) {
+      Log "codex app running ($($running.Count) processes): closing before writing the config"
+      Info 'Codex 正开着，先关掉，配置写好后会重新打开'
+      foreach ($p in $running) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
+      for ($i = 0; $i -lt 20 -and ($running | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })); $i++) { Start-Sleep -Milliseconds 500 }
+    }
+  }
   # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
   # Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content
   # changes. UTF-8 without BOM.
