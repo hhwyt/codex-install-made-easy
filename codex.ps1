@@ -158,7 +158,7 @@ function Show-KeyNote {
 # After install: how to open Codex, free-model rate limits and top-ups, stronger models
 function Show-NextSteps($configShown) {
   Section '以后怎么打开' ''
-  Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R"
+  Write-Host "     用桌面或开始菜单里的「Codex 中文」打开  ${Dim}从「ChatGPT」打开的话，国内网络下界面是英文$R"
   Section '关于免费模型' ''
   Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
   Write-Host "     ${Dim}不想被限速：在智谱充值，再把$R $Bold$configShown$R ${Dim}里的 model 换成付费模型$R"
@@ -324,6 +324,213 @@ function Get-Codex {
 function Open-Codex($codex) {
   $appId = (Get-AppxPackageManifest $codex.Package).Package.Applications.Application.Id | Select-Object -First 1
   Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
+}
+# Codex's own Language setting does nothing where OpenAI is unreachable (the comment at the top of the launcher says
+# why). The launcher opens Codex with Chinese turned on locally; "Codex 中文" shortcuts on the desktop and in the Start
+# menu point at it. Written to disk as is, so it stays readable for anyone who wants to check what it does
+$CodexZhLauncher = {
+# Opens Codex with a Chinese interface (written by the HumansLive Codex installer).
+# Codex shows translations only when OpenAI's feature switch enable_i18n (Statsig layer 72216192) is on, and the
+# switch is fetched from OpenAI on every launch; where OpenAI is unreachable it stays off and the UI is English
+# whatever the Language setting says. So start Codex with a local DevTools port, patch that one switch in every
+# Codex page, and stay alive while Codex runs (the patch only holds while the DevTools connection is open).
+# Nothing runs in the background: no service, no startup entry; after a restart it does nothing until opened again.
+# -InstallShortcuts: create the Codex shortcuts (named "Codex" plus the Chinese for Chinese) on the desktop and in the Start menu, then return.
+param([switch]$InstallShortcuts)
+$Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LogFile = Join-Path $Dir 'codex-zh.log'
+function Log($text) { try { Add-Content -LiteralPath $LogFile -Value ((Get-Date -Format 'HH:mm:ss.fff') + '  ' + $text) -Encoding UTF8 } catch { } }
+
+$package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
+if (-not $package) { Log 'codex not installed'; exit 1 }
+$appUserModelId = "$($package.PackageFamilyName)!App"
+$appDir = Join-Path $package.InstallLocation 'app\'
+
+# The shortcut icon is Codex's own, inside its versioned folder, so rewrite the shortcuts after a Codex update.
+# WScript.Shell cannot save a shortcut whose name is outside the system code page (Chinese on an English Windows),
+# so save it under an ASCII name and rename it
+$icon = Join-Path $appDir 'ChatGPT.exe'
+$shortcutName = 'Codex ' + [char]0x4E2D + [char]0x6587 + '.lnk'
+$shortcuts = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ $shortcutName }
+$iconStamp = Join-Path $Dir 'shortcut-icon.txt'
+function Save-Shortcut($path) {
+  $temporary = Join-Path $env:TEMP 'humanslive-codex-zh.lnk'
+  $link = (New-Object -ComObject WScript.Shell).CreateShortcut($temporary)
+  $link.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $link.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+  $link.WindowStyle = 7   # Minimized, so no PowerShell window shows up
+  $link.IconLocation = "$icon,0"
+  $link.Description = 'Codex'
+  $link.Save()
+  Move-Item -LiteralPath $temporary -Destination $path -Force
+}
+if ($InstallShortcuts) { $shortcuts | ForEach-Object { Save-Shortcut $_ }; Set-Content -LiteralPath $iconStamp -Value $icon; Log 'shortcuts installed'; return }
+try {
+  if ((Get-Content -LiteralPath $iconStamp -ErrorAction SilentlyContinue) -ne $icon) {
+    $shortcuts | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Save-Shortcut $_ }
+    Set-Content -LiteralPath $iconStamp -Value $icon; Log 'shortcut icons updated'
+  }
+} catch { Log "shortcut update failed: $($_.Exception.Message)" }
+
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class CodexActivator {
+  [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IApplicationActivationManager {
+    int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, int options, out uint processId);
+  }
+  [ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")] class ApplicationActivationManager { }
+  public static uint Activate(string appUserModelId, string arguments) {
+    uint processId;
+    Marshal.ThrowExceptionForHR(((IApplicationActivationManager)new ApplicationActivationManager()).ActivateApplication(appUserModelId, arguments, 0, out processId));
+    return processId;
+  }
+}
+'@
+
+# Runs at document start in every Codex page, before Codex's own scripts. The Statsig SDK stores its clients on
+# window.__STATSIG__ (it reuses an existing object, reassigns the property whenever a client registers, and sets
+# instances/firstInstance on it), so trap those assignments and wrap each client's getLayer/getDynamicConfig: for
+# layer 72216192, get('enable_i18n') answers true. Everything else Statsig returns is left as it is.
+$Patch = @'
+(() => {
+  if (window.__humansliveZh) return;
+  window.__humansliveZh = true;
+  const LAYER = '72216192';
+  const fixValue = (value) => {
+    if (!value || typeof value.get !== 'function' || value.__humansliveZh) return value;
+    const get = value.get;
+    try { value.get = function (key, fallback) { return key === 'enable_i18n' ? true : get.call(this, key, fallback); }; value.__humansliveZh = true; } catch (e) { }
+    return value;
+  };
+  const wrap = (original) => {
+    if (typeof original !== 'function' || original.__humansliveZh) return original;
+    const wrapped = function (layerName, options) {
+      const value = original.apply(this, arguments);
+      return layerName === LAYER ? fixValue(value) : value;
+    };
+    wrapped.__humansliveZh = true;
+    return wrapped;
+  };
+  // The client registers itself before its constructor finishes and assigns its own getLayer/getDynamicConfig
+  // afterwards, so wrap whatever gets assigned, not just what is there now
+  const fixClient = (client) => {
+    if (!client || typeof client !== 'object' || client.__humansliveZh) return;
+    client.__humansliveZh = true;
+    for (const name of ['getLayer', 'getDynamicConfig']) {
+      let current = wrap(client[name]);
+      Object.defineProperty(client, name, { configurable: true, get: () => current, set: (next) => { current = wrap(next); } });
+    }
+  };
+  const fixRoot = (root) => {
+    if (!root || typeof root !== 'object') return root;
+    if (!root.__humansliveZh) {
+      root.__humansliveZh = true;
+      for (const key of ['firstInstance', 'instances']) {
+        let current = root[key];
+        Object.defineProperty(root, key, { configurable: true, enumerable: true, get: () => current, set: (next) => { current = next; fixAll(root); } });
+      }
+    }
+    fixAll(root);
+    return root;
+  };
+  const fixAll = (root) => {
+    fixClient(root.firstInstance);
+    if (root.instances) Object.values(root.instances).forEach(fixClient);
+  };
+  let root = fixRoot(window.__STATSIG__);
+  Object.defineProperty(window, '__STATSIG__', { configurable: true, get: () => root, set: (next) => { root = fixRoot(next); } });
+})();
+'@
+
+function Send-Cdp($socket, $sessionId, $method, $params) {
+  $Script:CdpId++
+  $message = @{ id = $Script:CdpId; method = $method; params = $params }
+  if ($sessionId) { $message.sessionId = $sessionId }
+  $message = $message | ConvertTo-Json -Depth 5 -Compress
+  $bytes = [Text.Encoding]::UTF8.GetBytes($message)
+  $socket.SendAsync([ArraySegment[byte]]::new($bytes), 'Text', $true, [Threading.CancellationToken]::None).Wait()
+}
+# Returns $null once Codex has quit: a killed Codex does not always close the connection, so also watch its process
+function Receive-Cdp($socket) {
+  $buffer = New-Object byte[] 65536
+  $text = ''
+  do {
+    $task = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), [Threading.CancellationToken]::None)
+    while (-not $task.Wait(2000)) { if (-not (Get-Process -Id $codexProcessId -ErrorAction SilentlyContinue)) { return $null } }
+    $received = $task.Result
+    if ($received.MessageType -eq 'Close') { return $null }
+    $text += [Text.Encoding]::UTF8.GetString($buffer, 0, $received.Count)
+  } while (-not $received.EndOfMessage)
+  $text | ConvertFrom-Json
+}
+function Get-CodexProcesses($appDir) {
+  @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($appDir, [StringComparison]::OrdinalIgnoreCase) -and $_.Name -notlike 'codex-windows-sandbox-service*' })
+}
+
+
+# Already running from this launcher: just bring Codex to the front
+$mutex = [Threading.Mutex]::new($false, 'Local\HumansLiveCodexZh')
+if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; [CodexActivator]::Activate($appUserModelId, '') | Out-Null; exit }
+Set-Content -LiteralPath $LogFile -Value "$(Get-Date -Format s) start" -Encoding UTF8
+
+try {
+  # Codex runs as a single instance and ignores the arguments of a second launch, so a Codex opened some other way
+  # (without the DevTools port) has to close first
+  $running = Get-CodexProcesses $appDir
+  if ($running) {
+    Log "closing codex opened without the port ($($running.Count) processes)"
+    foreach ($p in $running) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
+    for ($i = 0; $i -lt 20 -and (Get-CodexProcesses $appDir); $i++) { Start-Sleep -Milliseconds 500 }
+  }
+  # A free port picked by the system; Chromium binds DevTools to 127.0.0.1 only
+  $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
+  $codexProcessId = [CodexActivator]::Activate($appUserModelId, "--remote-debugging-port=$port")
+  Log "codex $($package.Version) started: pid=$codexProcessId port=$port"
+  $browserUrl = $null
+  for ($i = 0; $i -lt 300 -and -not $browserUrl; $i++) {
+    try { $browserUrl = (Invoke-RestMethod "http://127.0.0.1:$port/json/version" -TimeoutSec 1).webSocketDebuggerUrl } catch { Start-Sleep -Milliseconds 100 }
+  }
+  if (-not $browserUrl) { throw 'DevTools port never opened' }
+  $socket = [Net.WebSockets.ClientWebSocket]::new()
+  $socket.ConnectAsync([Uri]$browserUrl, [Threading.CancellationToken]::None).Wait()
+} catch {
+  Log "launch failed: $($_.Exception.Message)"
+  # Never leave the user without Codex: if it is not running, open it the normal way (English where OpenAI is unreachable)
+  if (-not (Get-CodexProcesses $appDir)) { try { [CodexActivator]::Activate($appUserModelId, '') | Out-Null; Log 'opened codex without the patch' } catch { Log "open failed: $($_.Exception.Message)" } }
+  exit 1
+}
+
+# One browser-wide connection: every new page pauses until the patch is registered, then runs. A reload during
+# Codex's startup makes it fail to start, so a page that was already running is patched in place instead.
+# The patch holds while this connection is open; it closes when Codex quits, and so does this launcher
+try {
+  $Script:CdpId = 0
+  Send-Cdp $socket $null 'Target.setAutoAttach' @{ autoAttach = $true; waitForDebuggerOnStart = $true; flatten = $true }
+  while ($message = Receive-Cdp $socket) {
+    if ($message.error) { Log "cdp error: $($message.error.message)" }
+    if ($message.method -ne 'Target.attachedToTarget') { continue }
+    $sessionId = $message.params.sessionId; $target = $message.params.targetInfo; $paused = $message.params.waitingForDebugger
+    if ($target.type -eq 'page') {
+      Send-Cdp $socket $sessionId 'Page.enable' @{ }
+      Send-Cdp $socket $sessionId 'Page.addScriptToEvaluateOnNewDocument' @{ source = $Patch }
+      if (-not $paused) { Send-Cdp $socket $sessionId 'Runtime.evaluate' @{ expression = $Patch } }
+      Log "patched page $($target.url) paused=$paused"
+    }
+    if ($paused) { Send-Cdp $socket $sessionId 'Runtime.runIfWaitingForDebugger' @{ } }
+  }
+} catch { Log "connection ended: $($_.Exception.InnerException.Message)" }
+Log 'codex closed'
+}
+function Install-CodexZh {
+  $dir = Join-Path $env:LOCALAPPDATA 'HumansLive'
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  $launcher = Join-Path $dir 'codex-zh.ps1'
+  [IO.File]::WriteAllText($launcher, $CodexZhLauncher.ToString().Trim() + "`r`n", $utf8NoBom)
+  & $launcher -InstallShortcuts
+  Log "chinese launcher installed: $launcher"
+  $launcher
 }
 function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 # Is the current account in Administrators? In a non-elevated window the group is deny-only but the SID is still
@@ -800,7 +1007,11 @@ try {
     Log "verify reply: $reply"
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
   }
-  if (-not $env:CODEX_SETUP_NO_OPEN) { Open-Codex $codex }
+  $launcher = try { Install-CodexZh } catch { Log "chinese launcher failed: $($_.Exception.Message)"; $null }
+  if (-not $env:CODEX_SETUP_NO_OPEN) {
+    if ($launcher) { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" }
+    else { Open-Codex $codex }
+  }
   Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"
   Show-NextSteps $configPath
 
