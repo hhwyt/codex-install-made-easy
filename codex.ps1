@@ -158,7 +158,7 @@ function Show-KeyNote {
 # After install: how to open Codex, free-model rate limits and top-ups, stronger models
 function Show-NextSteps($configShown) {
   Section '以后怎么打开' ''
-  if ($Edition -eq 'zh') { Write-Host "     用桌面或开始菜单里的「Codex 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
+  if ($Edition -eq 'zh') { Write-Host "     用桌面或开始菜单里的「ChatGPT 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
   else { Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R" }
   Section '关于免费模型' ''
   Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
@@ -327,7 +327,7 @@ function Open-Codex($codex) {
   Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
 }
 # Codex's own Language setting does nothing where OpenAI is unreachable (the comment at the top of the launcher says
-# why). The launcher opens Codex with Chinese turned on locally; "Codex 汉化版" shortcuts on the desktop and in the
+# why). The launcher opens Codex with Chinese turned on locally; "ChatGPT 汉化版" shortcuts on the desktop and in the
 # Start menu point at it. Written to disk as is, so it stays readable for anyone who wants to check what it does
 $CodexZhLauncher = {
 # Opens Codex with a Chinese interface (written by the HumansLive Codex installer).
@@ -340,7 +340,7 @@ $CodexZhLauncher = {
 # cannot run, every failure here falls back to a plain launch, and if Codex does not render with the patch, it is
 # reopened without it and the patch stays off for that Codex version (disabled-<version>.txt).
 # Codex is never closed for this: if it is already open (from the Start menu, say), it is just brought to the front.
-# -InstallShortcuts: create the shortcuts ("Codex" plus the Chinese for "Chinese edition") on the desktop and in the
+# -InstallShortcuts: create the shortcuts ("ChatGPT" plus the Chinese for "Chinese edition") on the desktop and in the
 # Start menu, then return.
 param([switch]$InstallShortcuts)
 $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -352,13 +352,42 @@ if (-not $package) { Log 'codex not installed'; exit 1 }
 $appUserModelId = "$($package.PackageFamilyName)!App"
 $appDir = Join-Path $package.InstallLocation 'app\'
 
-# The shortcut icon is Codex's own, inside its versioned folder, so rewrite the shortcuts after a Codex update.
+# The shortcut looks exactly like the Start menu's "ChatGPT": its icon is built from the same logo files in the
+# Codex package (the black logo for a light Windows theme, the white one for a dark theme). Those files sit in the
+# versioned package folder, so the icon is rebuilt after a Codex update or a theme change.
 # WScript.Shell cannot save a shortcut whose name is outside the system code page (Chinese on an English Windows),
 # so save it under an ASCII name and rename it
-$icon = Join-Path $appDir 'ChatGPT.exe'
-$shortcutName = 'Codex ' + [char]0x6C49 + [char]0x5316 + [char]0x7248 + '.lnk'
-$shortcuts = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ $shortcutName }
+$chineseEdition = [string][char]0x6C49 + [char]0x5316 + [char]0x7248
+$shortcutName = "ChatGPT $chineseEdition.lnk"
+$folders = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs')
+$shortcuts = $folders | ForEach-Object { Join-Path $_ $shortcutName }
+$oldShortcuts = $folders | ForEach-Object { Join-Path $_ "Codex $chineseEdition.lnk" }   # The name used before
+$light = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).SystemUsesLightTheme -ne 0
+$variant = if ($light) { 'lightunplated' } else { 'unplated' }
+$iconStampValue = "$($package.Version) $variant"
 $iconStamp = Join-Path $Dir 'shortcut-icon.txt'
+# An .ico holding the package's PNGs as they are (Windows reads PNG icon entries); falls back to the exe's icon
+function Get-ShortcutIcon {
+  $files = @(16, 20, 24, 32, 40, 48, 64, 256 | ForEach-Object { Join-Path $package.InstallLocation "assets\Square44x44Logo.targetsize-$($_)_altform-$variant.png" } | Where-Object { Test-Path -LiteralPath $_ })
+  if (-not $files) { return (Join-Path $appDir 'ChatGPT.exe') + ',0' }
+  $images = $files | ForEach-Object { , [IO.File]::ReadAllBytes($_) }
+  $stream = [IO.MemoryStream]::new(); $writer = [IO.BinaryWriter]::new($stream)
+  $writer.Write([uint16]0); $writer.Write([uint16]1); $writer.Write([uint16]$images.Count)
+  $offset = 6 + 16 * $images.Count
+  foreach ($png in $images) {
+    $width = [int]$png[16] * 16777216 + [int]$png[17] * 65536 + [int]$png[18] * 256 + [int]$png[19]   # From the PNG header
+    $height = [int]$png[20] * 16777216 + [int]$png[21] * 65536 + [int]$png[22] * 256 + [int]$png[23]
+    $writer.Write([byte]($width % 256)); $writer.Write([byte]($height % 256)); $writer.Write([byte]0); $writer.Write([byte]0)
+    $writer.Write([uint16]1); $writer.Write([uint16]32); $writer.Write([uint32]$png.Length); $writer.Write([uint32]$offset)
+    $offset += $png.Length
+  }
+  foreach ($png in $images) { $writer.Write($png) }
+  Remove-Item (Join-Path $Dir 'chatgpt-*.ico') -ErrorAction SilentlyContinue
+  # A new file name each time, so Explorer's icon cache shows the new icon
+  $path = Join-Path $Dir "chatgpt-$($package.Version)-$variant.ico"
+  [IO.File]::WriteAllBytes($path, $stream.ToArray())
+  "$path,0"
+}
 function Save-Shortcut($path) {
   $temporary = Join-Path $env:TEMP 'humanslive-codex-zh.lnk'
   $link = (New-Object -ComObject WScript.Shell).CreateShortcut($temporary)
@@ -367,16 +396,27 @@ function Save-Shortcut($path) {
   $quotedScript = $PSCommandPath -replace "'", "''"
   $link.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"try { & '$quotedScript' } catch { Start-Process 'shell:AppsFolder\$appUserModelId' }`""
   $link.WindowStyle = 7   # Minimized, so no PowerShell window shows up
-  $link.IconLocation = "$icon,0"
-  $link.Description = 'Codex'
+  $link.IconLocation = $icon
+  $link.Description = 'ChatGPT'
   $link.Save()
   Move-Item -LiteralPath $temporary -Destination $path -Force
 }
-if ($InstallShortcuts) { $shortcuts | ForEach-Object { Save-Shortcut $_ }; Set-Content -LiteralPath $iconStamp -Value $icon; Log 'shortcuts installed'; return }
+if ($InstallShortcuts) {
+  $icon = Get-ShortcutIcon
+  $shortcuts | ForEach-Object { Save-Shortcut $_ }
+  Remove-Item -LiteralPath $oldShortcuts -ErrorAction SilentlyContinue
+  Set-Content -LiteralPath $iconStamp -Value $iconStampValue; Log "shortcuts installed: $icon"; return
+}
 try {
-  if ((Get-Content -LiteralPath $iconStamp -ErrorAction SilentlyContinue) -ne $icon) {
-    $shortcuts | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Save-Shortcut $_ }
-    Set-Content -LiteralPath $iconStamp -Value $icon; Log 'shortcut icons updated'
+  $renamed = @($oldShortcuts | Where-Object { Test-Path -LiteralPath $_ })
+  if ($renamed -or (Get-Content -LiteralPath $iconStamp -ErrorAction SilentlyContinue) -ne $iconStampValue) {
+    $icon = Get-ShortcutIcon
+    # Keep each shortcut where the user has one, under the new name
+    for ($i = 0; $i -lt $shortcuts.Count; $i++) {
+      if ((Test-Path -LiteralPath $shortcuts[$i]) -or (Test-Path -LiteralPath $oldShortcuts[$i])) { Save-Shortcut $shortcuts[$i] }
+    }
+    Remove-Item -LiteralPath $renamed -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $iconStamp -Value $iconStampValue; Log "shortcuts updated: $icon"
   }
 } catch { Log "shortcut update failed: $($_.Exception.Message)" }
 
@@ -590,9 +630,9 @@ function Install-CodexZh {
 # English edition chosen: remove what the Chinese edition added, so Codex is only opened the original way
 function Remove-CodexZh {
   $dir = Join-Path $env:LOCALAPPDATA 'HumansLive'
-  $links = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ 'Codex 汉化版.lnk' }
+  $links = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ 'ChatGPT 汉化版.lnk'; Join-Path $_ 'Codex 汉化版.lnk' }
   Remove-Item -LiteralPath $links -ErrorAction SilentlyContinue
-  Remove-Item (Join-Path $dir 'codex-zh.*'), (Join-Path $dir 'shortcut-icon.txt'), (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $dir 'codex-zh.*'), (Join-Path $dir 'shortcut-icon.txt'), (Join-Path $dir 'chatgpt-*.ico'), (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
 }
 # Two big buttons in a window on top, for users who would not think of typing into the console. Styled like the
 # humanslive.ai dialogs: white card, ink text, one blue primary button. Closing the window or Enter picks Chinese;
@@ -625,7 +665,7 @@ function Show-EditionDialog {
     $noteFont = New-Object Drawing.Font('Microsoft YaHei UI Light', 9.5)
     $y = 128
     foreach ($option in @(
-        @{ value = 'zh'; title = '汉化版（推荐）'; note = '界面中文 · 从桌面「Codex 汉化版」打开'; primary = $true },
+        @{ value = 'zh'; title = '汉化版（推荐）'; note = '界面中文 · 从桌面「ChatGPT 汉化版」打开'; primary = $true },
         @{ value = 'en'; title = '英文原版'; note = '界面英文 · 和官方一模一样'; primary = $false })) {
       $option.hover = $false
       $card = New-Object Windows.Forms.Panel -Property @{
@@ -672,7 +712,7 @@ function Select-Edition {
   if ($picked) { return $picked }
   $H = "$Blue$Bold"
   Write-Host "     ${Dim}Codex 是 OpenAI 做的，在国内打开$R${H}只有英文界面$R${Dim}。我们可以帮你汉化：$R"
-  Write-Host "     $(Pad '1. 汉化版（推荐）' 20)界面${H}中文$R · 从桌面「${H}Codex 汉化版$R」打开"
+  Write-Host "     $(Pad '1. 汉化版（推荐）' 20)界面${H}中文$R · 从桌面「${H}ChatGPT 汉化版$R」打开"
   Write-Host "     $(Pad '2. 英文原版' 20)界面${H}英文$R · 和官方${H}一模一样$R"
   while ($true) {
     $answer = "$(Read-Host '     输入 1 或 2，直接按回车选 1')".Trim()
