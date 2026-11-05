@@ -594,15 +594,85 @@ function Remove-CodexZh {
   Remove-Item -LiteralPath $links -ErrorAction SilentlyContinue
   Remove-Item (Join-Path $dir 'codex-zh.*'), (Join-Path $dir 'shortcut-icon.txt'), (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
 }
+# Two big buttons in a window on top, for users who would not think of typing into the console. Styled like the
+# humanslive.ai dialogs: white card, ink text, one blue primary button. Closing the window or Enter picks Chinese;
+# returns $null when no window can be shown
+function Show-EditionDialog {
+  try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    try { Add-Type -Namespace HumansLive -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop } catch {}
+    try { [void][HumansLive.Dpi]::SetProcessDPIAware() } catch {}
+    $color = { param($hex) [Drawing.ColorTranslator]::FromHtml($hex) }
+    $white = [Drawing.Color]::White
+    $form = New-Object Windows.Forms.Form
+    $form.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96)
+    $form.AutoScaleMode = 'Dpi'
+    $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10)
+    $form.ClientSize = New-Object Drawing.Size(480, 318)
+    $form.Text = 'Codex 安装'; $form.BackColor = $white; $form.StartPosition = 'CenterScreen'; $form.TopMost = $true
+    $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.KeyPreview = $true
+    $addLabel = {
+      param($text, $font, $hex, $y, $height)
+      $form.Controls.Add((New-Object Windows.Forms.Label -Property @{
+        Text = $text; Font = $font; ForeColor = (& $color $hex); Location = New-Object Drawing.Point(28, $y); Size = New-Object Drawing.Size(424, $height)
+      }))
+    }
+    & $addLabel 'HUMANSLIVE.AI ▸ CODEX' (New-Object Drawing.Font('Consolas', 9, [Drawing.FontStyle]::Bold)) '#0c8df6' 26 20
+    & $addLabel '选择 Codex 版本' (New-Object Drawing.Font('Microsoft YaHei UI', 15)) '#2e343b' 50 36
+    & $addLabel 'Codex 在国内打开只有英文界面，我们可以帮你汉化。' (New-Object Drawing.Font('Microsoft YaHei UI Light', 10)) '#737b85' 90 24
+    $choice = @{ value = 'zh' }
+    $titleFont = New-Object Drawing.Font('Microsoft YaHei UI', 11)
+    $noteFont = New-Object Drawing.Font('Microsoft YaHei UI Light', 9.5)
+    $y = 128
+    foreach ($option in @(
+        @{ value = 'zh'; title = '汉化版（推荐）'; note = '界面中文 · 从桌面「Codex 汉化版」打开'; primary = $true },
+        @{ value = 'en'; title = '英文原版'; note = '界面英文 · 和官方一模一样'; primary = $false })) {
+      $option.hover = $false
+      $card = New-Object Windows.Forms.Panel -Property @{
+        Tag = $option; BackColor = $white; Cursor = [Windows.Forms.Cursors]::Hand
+        Location = New-Object Drawing.Point(28, $y); Size = New-Object Drawing.Size(424, 70)
+      }
+      $card.Add_Paint({
+        $o = $this.Tag; $g = $_.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $k = $g.DpiX / 96; $r = 10 * $k; $w = $this.Width - 1; $h = $this.Height - 1
+        $path = New-Object Drawing.Drawing2D.GraphicsPath
+        $path.AddArc(0, 0, 2 * $r, 2 * $r, 180, 90); $path.AddArc($w - 2 * $r, 0, 2 * $r, 2 * $r, 270, 90)
+        $path.AddArc($w - 2 * $r, $h - 2 * $r, 2 * $r, 2 * $r, 0, 90); $path.AddArc(0, $h - 2 * $r, 2 * $r, 2 * $r, 90, 90); $path.CloseFigure()
+        if ($o.primary) {
+          $g.FillPath((New-Object Drawing.SolidBrush (& $color $(if ($o.hover) { '#0a77d1' } else { '#0c8df6' }))), $path)
+          $titleColor = $white; $noteColor = & $color '#e3f0fd'
+        } else {
+          $g.DrawPath((New-Object Drawing.Pen (& $color $(if ($o.hover) { '#2e343b' } else { '#cdd2d8' }))), $path)
+          $titleColor = & $color '#2e343b'; $noteColor = & $color '#737b85'
+        }
+        $left = [int](20 * $k)
+        [Windows.Forms.TextRenderer]::DrawText($g, $o.title, $titleFont, (New-Object Drawing.Point($left, [int](12 * $k))), $titleColor)
+        [Windows.Forms.TextRenderer]::DrawText($g, $o.note, $noteFont, (New-Object Drawing.Point($left, [int](38 * $k))), $noteColor)
+      })
+      $card.Add_MouseEnter({ $this.Tag.hover = $true; $this.Invalidate() })
+      $card.Add_MouseLeave({ $this.Tag.hover = $false; $this.Invalidate() })
+      $card.Add_Click({ $choice.value = $this.Tag.value; $form.Close() })
+      $form.Controls.Add($card)
+      $y += 84
+    }
+    $form.Add_KeyDown({ if ($_.KeyCode -in 'Enter', 'Escape') { $form.Close() } })
+    $form.Add_Shown({ $form.Activate() })
+    [void]$form.ShowDialog()
+    $form.Dispose()
+    $choice.value
+  } catch { Log "edition dialog failed: $($_.Exception.Message)"; $null }
+}
 # Ask once, before anything is installed. Chinese is the default: Enter, a redirected input, or CODEX_SETUP_EDITION=zh;
 # CODEX_SETUP_EDITION=en picks English without asking
 function Select-Edition {
   if ($env:CODEX_SETUP_EDITION -in 'zh', 'en') { return $env:CODEX_SETUP_EDITION }
   if ([Console]::IsInputRedirected) { return 'zh' }
-  Section '选择版本' ''
+  Section '选择版本' '在弹出的窗口里点一下'
+  $picked = Show-EditionDialog
+  if ($picked) { return $picked }
   $H = "$Blue$Bold"
   Write-Host "     ${Dim}Codex 是 OpenAI 做的，在国内打开$R${H}只有英文界面$R${Dim}。我们可以帮你汉化：$R"
-  Write-Host "     $(Pad '1. 汉化版（推荐）' 20)界面${H}中文$R · 从桌面「${H}Codex 汉化版$R」打开 · 失效时${H}自动变回英文$R"
+  Write-Host "     $(Pad '1. 汉化版（推荐）' 20)界面${H}中文$R · 从桌面「${H}Codex 汉化版$R」打开"
   Write-Host "     $(Pad '2. 英文原版' 20)界面${H}英文$R · 和官方${H}一模一样$R"
   while ($true) {
     $answer = "$(Read-Host '     输入 1 或 2，直接按回车选 1')".Trim()
