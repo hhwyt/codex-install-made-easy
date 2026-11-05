@@ -158,7 +158,7 @@ function Show-KeyNote {
 # After install: how to open Codex, free-model rate limits and top-ups, stronger models
 function Show-NextSteps($configShown) {
   Section '以后怎么打开' ''
-  if ($Edition -eq 'zh') { Write-Host "     用桌面或开始菜单里的「ChatGPT 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
+  if ($Edition -eq 'zh' -and $launcher) { Write-Host "     用桌面或开始菜单里的「ChatGPT 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
   else { Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R" }
   Section '关于免费模型' ''
   Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
@@ -576,7 +576,7 @@ try {
 # first, Chromium resumes the page by itself). A reload during Codex's startup makes it fail to start, so a page that
 # was already running is patched in place instead. The patch holds while this connection is open; it closes when
 # Codex quits, and so does this launcher.
-# Health check: a Codex window must show its UI within 60 s. If it does not, assume the patch broke this Codex
+# Health check: a Codex window must show its UI within 120 s (it can take over a minute where OpenAI is unreachable). If it does not, assume the patch broke this Codex
 # version: turn the patch off for this version and reopen Codex without it
 function Disable-Patch($reason) {
   Log "patch disabled: $reason"
@@ -594,8 +594,8 @@ try {
     if (-not $healthy -and $pages) {
       if ($message -isnot [string] -and $message.id -and $probeIds.ContainsKey([int]$message.id) -and $message.result.result.value -eq $true) {
         $healthy = $true; Log "codex ui is up after $([int]((Get-Date) - $attachedAt).TotalSeconds) s"
-      } elseif (((Get-Date) - $attachedAt).TotalSeconds -gt 60) {
-        Disable-Patch "codex $($package.Version) showed no UI within 60 s"; exit 1
+      } elseif (((Get-Date) - $attachedAt).TotalSeconds -gt 120) {
+        Disable-Patch "codex $($package.Version) showed no UI within 120 s"; exit 1
       } elseif (((Get-Date) - $probedAt).TotalSeconds -ge 2) {
         foreach ($page in $pages) { $probeIds[(Send-Cdp $socket $page 'Runtime.evaluate' @{ expression = $HealthScript; returnByValue = $true })] = $true }
         $probedAt = Get-Date
@@ -623,7 +623,13 @@ function Install-CodexZh {
   New-Item -ItemType Directory -Force $dir | Out-Null
   $launcher = Join-Path $dir 'codex-zh.ps1'
   [IO.File]::WriteAllText($launcher, $CodexZhLauncher.ToString().Trim() + "`r`n", $utf8NoBom)
-  & $launcher -InstallShortcuts
+  # Choosing the Chinese edition again means trying the patch again, even if it was turned off for this Codex version
+  Remove-Item (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
+  # Run it as its own process with -ExecutionPolicy Bypass, like the shortcuts do: Windows forbids running .ps1 files
+  # by default (Restricted), which irm | iex is not subject to but & $launcher is
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher -InstallShortcuts
+  $link = Join-Path ([Environment]::GetFolderPath('Programs')) 'ChatGPT 汉化版.lnk'
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $link)) { throw "shortcuts not created (exit=$LASTEXITCODE), see $(Join-Path $dir 'codex-zh.log')" }
   Log "chinese launcher installed: $launcher"
   $launcher
 }
@@ -1216,6 +1222,9 @@ try {
     else { Open-Codex $codex }
   }
   Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"
+  if ($Edition -eq 'zh' -and -not $launcher) {
+    Write-Host "     $Red$Bold$Cross 汉化没装上$R，这次打开的是英文界面。把这个日志文件发到社群，我们来修：$LogFile"
+  }
   Show-NextSteps $configPath
 
   # ---------- Closing banner: other free HumansLive tools ----------
