@@ -158,7 +158,8 @@ function Show-KeyNote {
 # After install: how to open Codex, free-model rate limits and top-ups, stronger models
 function Show-NextSteps($configShown) {
   Section '以后怎么打开' ''
-  Write-Host "     用桌面或开始菜单里的「Codex 中文」打开  ${Dim}从「ChatGPT」打开的话，国内网络下界面是英文$R"
+  if ($Edition -eq 'zh') { Write-Host "     用桌面或开始菜单里的「Codex 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
+  else { Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R" }
   Section '关于免费模型' ''
   Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
   Write-Host "     ${Dim}不想被限速：在智谱充值，再把$R $Bold$configShown$R ${Dim}里的 model 换成付费模型$R"
@@ -326,8 +327,8 @@ function Open-Codex($codex) {
   Start-Process "shell:AppsFolder\$($codex.Package.PackageFamilyName)!$appId"
 }
 # Codex's own Language setting does nothing where OpenAI is unreachable (the comment at the top of the launcher says
-# why). The launcher opens Codex with Chinese turned on locally; "Codex 中文" shortcuts on the desktop and in the Start
-# menu point at it. Written to disk as is, so it stays readable for anyone who wants to check what it does
+# why). The launcher opens Codex with Chinese turned on locally; "Codex 汉化版" shortcuts on the desktop and in the
+# Start menu point at it. Written to disk as is, so it stays readable for anyone who wants to check what it does
 $CodexZhLauncher = {
 # Opens Codex with a Chinese interface (written by the HumansLive Codex installer).
 # Codex shows translations only when OpenAI's feature switch enable_i18n (Statsig layer 72216192) is on, and the
@@ -338,7 +339,9 @@ $CodexZhLauncher = {
 # Whatever goes wrong, Codex still opens, at worst in English: the shortcut opens Codex directly when this script
 # cannot run, every failure here falls back to a plain launch, and if Codex does not render with the patch, it is
 # reopened without it and the patch stays off for that Codex version (disabled-<version>.txt).
-# -InstallShortcuts: create the Codex shortcuts (named "Codex" plus the Chinese for Chinese) on the desktop and in the Start menu, then return.
+# Codex is never closed for this: if it is already open (from the Start menu, say), it is just brought to the front.
+# -InstallShortcuts: create the shortcuts ("Codex" plus the Chinese for "Chinese edition") on the desktop and in the
+# Start menu, then return.
 param([switch]$InstallShortcuts)
 $Dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogFile = Join-Path $Dir 'codex-zh.log'
@@ -353,7 +356,7 @@ $appDir = Join-Path $package.InstallLocation 'app\'
 # WScript.Shell cannot save a shortcut whose name is outside the system code page (Chinese on an English Windows),
 # so save it under an ASCII name and rename it
 $icon = Join-Path $appDir 'ChatGPT.exe'
-$shortcutName = 'Codex ' + [char]0x4E2D + [char]0x6587 + '.lnk'
+$shortcutName = 'Codex ' + [char]0x6C49 + [char]0x5316 + [char]0x7248 + '.lnk'
 $shortcuts = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ $shortcutName }
 $iconStamp = Join-Path $Dir 'shortcut-icon.txt'
 function Save-Shortcut($path) {
@@ -504,13 +507,12 @@ if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; 
 Set-Content -LiteralPath $LogFile -Value "$(Get-Date -Format s) start" -Encoding UTF8
 
 try {
-  # Codex runs as a single instance and ignores the arguments of a second launch, so a Codex opened some other way
-  # (without the DevTools port) has to close first
-  $running = Get-CodexProcesses $appDir
-  if ($running) {
-    Log "closing codex opened without the port ($($running.Count) processes)"
-    foreach ($p in $running) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
-    for ($i = 0; $i -lt 20 -and (Get-CodexProcesses $appDir); $i++) { Start-Sleep -Milliseconds 500 }
+  # Codex runs as a single instance and ignores the arguments of a second launch. A Codex opened some other way may be
+  # in the middle of a task, so leave it alone and just bring it to the front; it is Chinese the next time it is
+  # opened from our shortcut
+  if (Get-CodexProcesses $appDir | Where-Object { $_.Name -eq 'ChatGPT.exe' }) {
+    Log 'codex already open without the patch: bringing it to the front'
+    Open-CodexPlain; exit
   }
   # A free port picked by the system; Chromium binds DevTools to 127.0.0.1 only
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
@@ -584,6 +586,29 @@ function Install-CodexZh {
   & $launcher -InstallShortcuts
   Log "chinese launcher installed: $launcher"
   $launcher
+}
+# English edition chosen: remove what the Chinese edition added, so Codex is only opened the original way
+function Remove-CodexZh {
+  $dir = Join-Path $env:LOCALAPPDATA 'HumansLive'
+  $links = [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs') | ForEach-Object { Join-Path $_ 'Codex 汉化版.lnk' }
+  Remove-Item -LiteralPath $links -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $dir 'codex-zh.*'), (Join-Path $dir 'shortcut-icon.txt'), (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
+}
+# Ask once, before anything is installed. Chinese is the default: Enter, a redirected input, or CODEX_SETUP_EDITION=zh;
+# CODEX_SETUP_EDITION=en picks English without asking
+function Select-Edition {
+  if ($env:CODEX_SETUP_EDITION -in 'zh', 'en') { return $env:CODEX_SETUP_EDITION }
+  if ([Console]::IsInputRedirected) { return 'zh' }
+  Section '选择版本' ''
+  $H = "$Blue$Bold"
+  Write-Host "     ${Dim}Codex 是 OpenAI 做的，在国内打开$R${H}只有英文界面$R${Dim}。我们可以帮你汉化：$R"
+  Write-Host "     $(Pad '1. 汉化版（推荐）' 20)界面${H}中文$R · 从桌面「${H}Codex 汉化版$R」打开 · 失效时${H}自动变回英文$R"
+  Write-Host "     $(Pad '2. 英文原版' 20)界面${H}英文$R · 和官方${H}一模一样$R"
+  while ($true) {
+    $answer = "$(Read-Host '     输入 1 或 2，直接按回车选 1')".Trim()
+    if ($answer -in '', '1') { return 'zh' }
+    if ($answer -eq '2') { return 'en' }
+  }
 }
 function Test-Elevated { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 # Is the current account in Administrators? In a non-elevated window the group is deny-only but the SID is still
@@ -881,6 +906,9 @@ $Steps = 3
 try {
   Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱'
   Write-Host "  $Blue→$R 遇到问题来社群找我们：${Link}https://humanslive.ai/community$R"
+  $Edition = Select-Edition
+  Log "edition: $Edition"
+  Ok $(if ($Edition -eq 'zh') { '汉化版' } else { '英文原版' })
 
   # ---------- Preparation: system check, source race, then start the background download ----------
   Section '系统检测' ''
@@ -985,21 +1013,22 @@ try {
   }
   $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"", '') + $keptLines + @(
     '', '[model_providers.zhipu]', 'name = "智谱 GLM"', "base_url = `"$ZhipuBaseUrl`"", 'wire_api = "responses"', 'requires_openai_auth = true')
-  # Codex follows the system language by default; force Simplified Chinese on every run (the Language setting, stored
-  # under [desktop]): replace any other value in place, so an already-Chinese config stays byte-identical. Windows' own
+  # Codex follows the system language by default; set the Language setting (stored under [desktop]) to the chosen
+  # edition on every run: replace any other value in place, so an unchanged config stays byte-identical. Windows' own
   # dialogs follow the Windows display language; there is no per-app switch for those
+  $localeLine = if ($Edition -eq 'zh') { 'localeOverride = "zh-CN"' } else { 'localeOverride = "en-US"' }
   $desktopAt = [array]::IndexOf($configLines, '[desktop]')
   if ($desktopAt -ge 0) {
     $found = $false
     for ($i = $desktopAt + 1; $i -lt $configLines.Count -and $configLines[$i] -notmatch '^\['; $i++) {
-      if ($configLines[$i] -match '^\s*localeOverride\s*=') { $configLines[$i] = 'localeOverride = "zh-CN"'; $found = $true }
+      if ($configLines[$i] -match '^\s*localeOverride\s*=') { $configLines[$i] = $localeLine; $found = $true }
     }
     if (-not $found) {
       $after = if ($desktopAt -lt $configLines.Count - 1) { $configLines[($desktopAt + 1)..($configLines.Count - 1)] } else { @() }
-      $configLines = $configLines[0..$desktopAt] + @('localeOverride = "zh-CN"') + $after
+      $configLines = $configLines[0..$desktopAt] + @($localeLine) + $after
     }
   }
-  else { $configLines += @('', '[desktop]', 'localeOverride = "zh-CN"') }
+  else { $configLines += @('', '[desktop]', $localeLine) }
   $newConfig = ($configLines -join "`n") + "`n"
   $newAuth = "{`"OPENAI_API_KEY`":`"$ZhipuApiKey`"}`n"
   $backedUp = $false
@@ -1060,7 +1089,9 @@ try {
     Log "verify reply: $reply"
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
   }
-  $launcher = try { Install-CodexZh } catch { Log "chinese launcher failed: $($_.Exception.Message)"; $null }
+  $launcher = $null
+  if ($Edition -eq 'zh') { $launcher = try { Install-CodexZh } catch { Log "chinese launcher failed: $($_.Exception.Message)"; $null } }
+  else { Remove-CodexZh }
   if (-not $env:CODEX_SETUP_NO_OPEN) {
     if ($launcher) { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" }
     else { Open-Codex $codex }
