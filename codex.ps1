@@ -1118,7 +1118,12 @@ try {
   # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
   # Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content
   # changes. UTF-8 without BOM.
-  New-Item -ItemType Directory -Force $CodexHome | Out-Null
+  try { New-Item -ItemType Directory -Force $CodexHome -ErrorAction Stop | Out-Null }
+  catch {
+    $owner = try { (Get-Acl -LiteralPath $env:USERPROFILE).Owner } catch { '?' }
+    Log "create $CodexHome failed: $($_.Exception.Message) owner of $env:USERPROFILE=$owner user=$env:USERDOMAIN\$env:USERNAME"
+    Fail "没有权限在 $env:USERPROFILE 里新建 .codex 文件夹（Codex 的配置放在这里），多半是被安全软件（360、火绒、电脑管家等）拦住了。先暂时退出安全软件，再重新运行这行命令；还不行的话，把下面的日志发给我们，我们来修。"
+  }
   $backupSuffix = '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   $keptLines = @()
   if (Test-Path $configPath) {
