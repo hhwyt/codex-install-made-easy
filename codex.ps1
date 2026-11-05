@@ -756,6 +756,7 @@ function Install-FromMsix($file) {
   } else { $result = 'ERROR:没有管理员权限' }
   Clear-Line
   Log "install msix: $result"
+  if ("$result" -match '0x80073CFE') { $Script:RepositoryBroken = $true }
   if ("$result" -ne 'OK') { Info "直接安装没成功（$($result -replace '^ERROR:', '')），改用微软商店"; return $false }
   Remove-Item $file, "$file.etag" -Force -ErrorAction SilentlyContinue
   $true
@@ -773,6 +774,7 @@ function Install-FromStore {
   while (-not $winget.HasExited) { Wait-Tick 0.3 '从微软商店安装 Codex' $since }
   Clear-Line
   Log "winget exit=$($winget.ExitCode)"   # winget reports success even when UAC was declined, so the caller checks again
+  if ($winget.ExitCode -eq -2147009282) { $Script:RepositoryBroken = $true }   # 0x80073CFE
 }
 
 # ---------- Zhipu API key ----------
@@ -1121,7 +1123,7 @@ try {
     $installed = $false
     if ($Script:Dl) {
       if (-not $Script:Dl.Done) {
-        Info "下载 Codex（$($Script:Dl.Name)，约 $([int]($Script:Dl.Total / 1MB)) MB；中断后重新运行会接着下）"
+        Info "下载 Codex（$($Script:Dl.Name)$(if ($Script:Dl.Total -gt 0) { "，约 $([int]($Script:Dl.Total / 1MB)) MB" })；中断后重新运行会接着下）"
         Show-DownloadProgress
       }
       if ($Script:Dl.Done) {
@@ -1129,8 +1131,15 @@ try {
         $installed = Install-FromMsix $Script:Dl.File
       } else { Info '镜像下载失败，改用微软商店' }
     }
-    if (-not $installed) { Install-FromStore }
+    # 0x80073CFE: Windows' app database (AppRepository) is damaged, so the Store fails the same way and only a
+    # Windows repair helps; common on trimmed or modified Windows images
+    if (-not $installed -and -not $Script:RepositoryBroken) { Install-FromStore }
     $codex = Get-Codex
+    if (-not $codex -and $Script:RepositoryBroken) {
+      $repair = if ([int]$os.BuildNumber -ge 22000) { '打开「设置 → 系统 → 恢复」，在「使用 Windows 更新修复问题」那一行点「立即重新安装」（保留文件和软件，约 1 小时）' }
+                else { '到微软官网下载「Windows 10 媒体创建工具」，选「立即升级这台电脑」并保留文件和应用（约 1 小时）' }
+      Fail "这台电脑的 Windows 应用数据库坏了（错误 0x80073CFE），微软商店也装不上任何应用，不是 Codex 的问题，多见于精简版、修改版 Windows。修复办法：$repair。修好后重新运行这行命令。"
+    }
     if (-not $codex) {
       Start-Process "ms-windows-store://pdp/?ProductId=$CodexStoreId" -ErrorAction SilentlyContinue
       Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
