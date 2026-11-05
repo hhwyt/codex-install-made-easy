@@ -1122,7 +1122,21 @@ try {
   catch {
     $owner = try { (Get-Acl -LiteralPath $env:USERPROFILE).Owner } catch { '?' }
     Log "create $CodexHome failed: $($_.Exception.Message) owner of $env:USERPROFILE=$owner user=$env:USERDOMAIN\$env:USERNAME"
-    Fail "没有权限在 $env:USERPROFILE 里新建 .codex 文件夹（Codex 的配置放在这里），多半是被安全软件（360、火绒、电脑管家等）拦住了。先暂时退出安全软件，再重新运行这行命令；还不行的话，把下面的日志发给我们，我们来修。"
+    # Seen on modified Windows builds: the user has no write access to the top of their own profile folder (owner
+    # SYSTEM, no entry for the user), while AppData and the rest are fine. Give the user full control of that folder
+    # (inherited by new subfolders), which needs one elevation prompt, then try again
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Todo '马上会弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
+    Info "你的用户文件夹 $env:USERPROFILE 缺了你自己的写入权限，Codex 的配置写不进去，确认后帮你补上"
+    try {
+      $fix = Start-Process icacls.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "`"$env:USERPROFILE`" /grant *$($sid):(OI)(CI)F"
+      Log "icacls grant exit=$($fix.ExitCode)"
+      New-Item -ItemType Directory -Force $CodexHome -ErrorAction Stop | Out-Null
+      Ok '已补上权限'
+    } catch {
+      Log "permission fix failed: $($_.Exception.Message)"
+      Fail "没有权限在 $env:USERPROFILE 里新建 .codex 文件夹（Codex 的配置放在这里），自动修复也没成功。重新运行这行命令，弹出确认框时点「是」；还不行的话，把下面的日志发给我们，我们来修。"
+    }
   }
   $backupSuffix = '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   $keptLines = @()
