@@ -43,7 +43,8 @@ header "Codex 官方安装" "用 OpenAI 官方安装命令，登录你自己的 
 say "检查旧配置"
 CLEANED=""
 # A previous Chinese-model install leaves a Zhipu config that keeps Codex on Zhipu and ignores ChatGPT sign-in.
-# Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", [model_providers.zhipu])
+# Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", its model catalog,
+# [model_providers.zhipu])
 # and an auth.json that holds only a Zhipu key; keep everything else and back up first.
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
@@ -55,8 +56,10 @@ if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*model_provider[[:space:]]*=[[:spac
     /^\[/ { in_table = 1; skip = ($0 == "[model_providers.zhipu]") }
     !in_table && /^[[:space:]]*model_provider[[:space:]]*=[[:space:]]*"zhipu"/ { next }
     !in_table && /^[[:space:]]*model[[:space:]]*=[[:space:]]*"glm-/ { next }
+    !in_table && /^[[:space:]]*model_catalog_json[[:space:]]*=.*humanslive-models\.json/ { next }
     !skip { print }
   ' "$CONFIG$BACKUP_SUFFIX" > "$CONFIG"
+  rm -f "$CODEX_HOME/humanslive-models.json"
   CLEANED=1; ok "已去掉国产模型版的智谱配置"; info "原文件备份为 $(short_path "$CONFIG")$BACKUP_SUFFIX"
 fi
 if [ -f "$AUTH" ] && grep -Eqx '[{]"OPENAI_API_KEY":"[0-9a-f]{32}[.][A-Za-z0-9]{16}"[}]' "$AUTH"; then

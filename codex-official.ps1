@@ -52,7 +52,8 @@ if ($installed) {
   Say '检查旧配置'
   $cleaned = $false
   # A previous Chinese-model install leaves a Zhipu config that keeps Codex on Zhipu and ignores ChatGPT sign-in.
-  # Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", [model_providers.zhipu])
+  # Remove only the lines that edition wrote (model_provider = "zhipu", model = "glm-…", its model catalog,
+  # [model_providers.zhipu])
   # and an auth.json that holds only a Zhipu key; keep everything else and back up first. UTF-8 without BOM.
   $codexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
   $configPath = Join-Path $codexHomeDir 'config.toml'
@@ -64,10 +65,11 @@ if ($installed) {
     $keptLines = @(); $inTable = $false; $skipTable = $false
     foreach ($line in [IO.File]::ReadAllLines($configPath, $utf8NoBom)) {
       if ($line -match '^\[') { $inTable = $true; $skipTable = ($line.Trim() -eq '[model_providers.zhipu]') }
-      if (-not $inTable -and $line -match '^\s*(model_provider\s*=\s*"zhipu"|model\s*=\s*"glm-)') { continue }
+      if (-not $inTable -and $line -match '^\s*(model_provider\s*=\s*"zhipu"|model\s*=\s*"glm-|model_catalog_json\s*=.*humanslive-models\.json)') { continue }
       if (-not $skipTable) { $keptLines += $line }
     }
     [IO.File]::WriteAllText($configPath, (($keptLines -join "`n") + "`n"), $utf8NoBom)
+    Remove-Item (Join-Path $codexHomeDir 'humanslive-models.json') -ErrorAction SilentlyContinue
     $cleaned = $true; Ok '已去掉国产模型版的智谱配置'; Info "原文件备份为 $configPath$backupSuffix"
   }
   if ((Test-Path $authPath) -and ([IO.File]::ReadAllText($authPath, $utf8NoBom).Trim() -cmatch '^\{"OPENAI_API_KEY":"[0-9a-f]{32}\.[A-Za-z0-9]{16}"\}$')) {

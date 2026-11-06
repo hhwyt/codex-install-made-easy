@@ -18,6 +18,10 @@ CODEX_BUNDLE_ID="com.openai.codex"
 ZHIPU_BASE_URL="${CODEX_SETUP_ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/v1}"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
+# Codex's model menu lists OpenAI's GPT models (and suggests switching to them) whatever the provider is, and picking one
+# writes it into config.toml; Zhipu has none of them, so every message then fails with "This model isn't available".
+# This catalog (codex-models.json in the repository) replaces that list with Zhipu models only
+MODEL_CATALOG_URL="https://humanslive.ai/codex-models.json"
 WORK_DIR="$(mktemp -d -t codex-setup)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 cat > "$WORK_DIR/fx.pl" <<'FX'
@@ -157,7 +161,6 @@ else
 fi
 STEP=0
 # Show the home directory as ~
-short_path() { case "$1" in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
 term_cols() { local cols; cols=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); [ "${cols:-0}" -gt 0 ] 2>/dev/null && echo "$cols" || echo 80; }
 # Intro: a short digital rain, then the title decodes out of noise (under 1.5 s)
 header() {
@@ -191,14 +194,14 @@ key_note() {
   info "这个 Key 是用你自己的智谱账号建的，只保存在你的电脑上，绝对安全"
   info "随时可以在智谱控制台删掉（名字以 Codex- 开头）"
 }
-# After install: how to open Codex, free-model rate limits and top-ups, stronger models. Usage: next_steps <app> <config>
+# After install: how to open Codex, free-model rate limits and top-ups, stronger models. Usage: next_steps <app>
 next_steps() {
   local app_name; app_name=$(basename "$1" .app)
   section "以后怎么打开"
   printf '     「启动台」或「应用程序」里的「%s」就是 Codex  %sOpenAI 把 Codex 并进了 ChatGPT 桌面版%s\n' "$app_name" "$C_DIM" "$C_RESET" >&2
   section "关于免费模型"
   printf '     不扣费，用得太频繁会被限速，等一会儿就恢复\n' >&2
-  printf '     %s不想被限速：在智谱充值，再把%s %s%s%s %s里的 model 换成付费模型%s\n' "$C_DIM" "$C_RESET" "$C_BOLD" "$(short_path "$2")" "$C_RESET" "$C_DIM" "$C_RESET" >&2
+  printf '     %s不想被限速：在智谱充值，再在 Codex 右下角的模型菜单里选「付费」的模型%s\n' "$C_DIM" "$C_RESET" >&2
   printf '     %shttps://bigmodel.cn/finance/pay%s\n' "$C_LINK" "$C_RESET" >&2
   section "想用更强的模型" "我们帮你开通"
   printf '     %sOpenAI 官方 GPT 模型%s\n     %sClaude 模型%s\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
@@ -649,9 +652,19 @@ fi
 # ---------- Write the config as soon as the key exists, so a rerun after a later failure needs no new scan ----------
 # Only touch model, model_provider and [model_providers.zhipu]; keep everything else. Back up only if content changes.
 mkdir -p "$CODEX_HOME"
+# The model menu shows only Zhipu models: fetch the catalog (see MODEL_CATALOG_URL); without it, the menu stays as it is
+CATALOG="$CODEX_HOME/humanslive-models.json"
+CATALOG_LINE=""
+if curl -fsS --max-time 20 "$MODEL_CATALOG_URL" -o "$WORK_DIR/catalog.json" 2>/dev/null &&
+   grep -q "\"slug\": \"$MODEL\"" "$WORK_DIR/catalog.json"; then
+  CATALOG_LINE="model_catalog_json = \"$(printf '%s' "$CATALOG" | sed 's/[\\"]/\\&/g')\""
+else
+  log "model catalog skipped"
+fi
 BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
 {
   printf 'model_provider = "zhipu"\nmodel = "%s"\n' "$MODEL"
+  [ -z "$CATALOG_LINE" ] || printf '%s\n' "$CATALOG_LINE"
   kept=""
   if [ -f "$CONFIG" ]; then
     # Drop top-level model / model_provider (before the first table) and the whole old [model_providers.zhipu] table.
@@ -660,7 +673,7 @@ BACKUP_SUFFIX=".bak-$(date +%Y%m%d%H%M%S)"
     kept=$(awk '
       { line = $0; sub(/\r$/, "", line) }
       /^\[/ { in_table = 1; skip = (line == "[model_providers.zhipu]") }
-      !in_table && /^[[:space:]]*(model|model_provider)[[:space:]]*=/ { next }
+      !in_table && /^[[:space:]]*(model|model_provider|model_catalog_json)[[:space:]]*=/ { next }
       skip { next }
       /^[[:space:]]*$/ { if (printed) blanks = blanks $0 "\n"; next }
       { printf "%s", blanks; blanks = ""; print; printed = 1 }
@@ -697,6 +710,7 @@ for pair in "config.toml:$CONFIG" "auth.json:$AUTH"; do
   mv "$new" "$dest"
 done
 chmod 600 "$AUTH"
+[ -z "$CATALOG_LINE" ] || mv "$WORK_DIR/catalog.json" "$CATALOG"
 log "config written: $CONFIG"
 ok "已把 Key 和模型写进 Codex 的配置"
 [ -z "$BACKED_UP" ] || info "原来的配置已备份为 *${BACKUP_SUFFIX}"
@@ -746,20 +760,28 @@ fi
 
 CODEX_CLI="$CODEX_APP/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 if [ -x "$CODEX_CLI" ]; then
-  # macOS has no timeout(1): run in the background and give up after 120 s
-  ( cd "$WORK_DIR" && CODEX_HOME="$CODEX_HOME" "$CODEX_CLI" exec --ephemeral --skip-git-repo-check "只回复两个字：好了" < /dev/null > "$WORK_DIR/verify.txt" 2>/dev/null ) &
-  verify_pid=$!
-  ( sleep 120; pkill -P "$verify_pid" 2>/dev/null; kill "$verify_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  watchdog_pid=$!
-  spin "$verify_pid" "让 Codex 回一句话" || true
-  pkill -P "$watchdog_pid" 2>/dev/null || true
-  reply=$(tail -1 "$WORK_DIR/verify.txt" 2>/dev/null || true)
-  log "verify reply: $reply"
+  # macOS has no timeout(1): run in the background and give up after 120 s. If Codex rejects the model catalog (it
+  # then ignores the whole config), drop the catalog and ask again
+  for attempt in 1 2; do
+    ( cd "$WORK_DIR" && CODEX_HOME="$CODEX_HOME" "$CODEX_CLI" exec --ephemeral --skip-git-repo-check "只回复两个字：好了" < /dev/null > "$WORK_DIR/verify.txt" 2>"$WORK_DIR/verify-err.txt" ) &
+    verify_pid=$!
+    ( sleep 120; pkill -P "$verify_pid" 2>/dev/null; kill "$verify_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    watchdog_pid=$!
+    spin "$verify_pid" "让 Codex 回一句话" || true
+    pkill -P "$watchdog_pid" 2>/dev/null || true
+    reply=$(tail -1 "$WORK_DIR/verify.txt" 2>/dev/null || true)
+    log "verify reply: $reply"
+    if [ -n "$reply" ] || [ -z "$CATALOG_LINE" ] || ! grep -q model_catalog_json "$WORK_DIR/verify-err.txt" 2>/dev/null; then break; fi
+    log "model catalog rejected: $(grep -m1 model_catalog_json "$WORK_DIR/verify-err.txt")"
+    grep -vxF "$CATALOG_LINE" "$CONFIG" > "$WORK_DIR/config.toml.new" || true
+    mv "$WORK_DIR/config.toml.new" "$CONFIG"
+    rm -f "$CATALOG"; CATALOG_LINE=""
+  done
   if [ -n "$reply" ]; then ok "Codex 回复：$reply"; else info "Codex 没有回复，打开后可以直接试用"; fi
 fi
 [ -n "${CODEX_SETUP_NO_OPEN:-}" ] || open "$CODEX_APP"
 done_line "Codex 已经打开，用的是智谱免费模型 ${C_BOLD}${MODEL}${C_RESET}"
-next_steps "$CODEX_APP" "$CONFIG"
+next_steps "$CODEX_APP"
 
 # ---------- Closing banner: other free HumansLive tools ----------
 # Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.

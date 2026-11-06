@@ -19,6 +19,10 @@ $CodexStoreId = '9PLM9XGG6VKS'
 $CodexPackageName = 'OpenAI.Codex'
 $CodexPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'   # Publisher of OpenAI.Codex in the Microsoft Store; used to verify mirror downloads
 $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
+# Codex's model menu lists OpenAI's GPT models (and suggests switching to them) whatever the provider is, and picking one
+# writes it into config.toml; Zhipu has none of them, so every message then fails with "This model isn't available".
+# This catalog (codex-models.json in the repository) replaces that list with Zhipu models only
+$ModelCatalogUrl = 'https://humanslive.ai/codex-models.json'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 $FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
@@ -156,13 +160,13 @@ function Show-KeyNote {
   Info '随时可以在智谱控制台删掉（名字以 Codex- 开头）'
 }
 # After install: how to open Codex, free-model rate limits and top-ups, stronger models
-function Show-NextSteps($configShown) {
+function Show-NextSteps {
   Section '以后怎么打开' ''
   if ($Edition -eq 'zh' -and $launcher) { Write-Host "     用桌面或开始菜单里的「ChatGPT 汉化版」打开  ${Dim}从「ChatGPT」打开是英文原版$R" }
   else { Write-Host "     开始菜单里的「ChatGPT」就是 Codex  ${Dim}OpenAI 把 Codex 并进了 ChatGPT 桌面版$R" }
   Section '关于免费模型' ''
   Write-Host '     不扣费，用得太频繁会被限速，等一会儿就恢复'
-  Write-Host "     ${Dim}不想被限速：在智谱充值，再把$R $Bold$configShown$R ${Dim}里的 model 换成付费模型$R"
+  Write-Host "     ${Dim}不想被限速：在智谱充值，再在 Codex 右下角的模型菜单里选「付费」的模型$R"
   Write-Host "     ${Link}https://bigmodel.cn/finance/pay$R"
   Section '想用更强的模型' '我们帮你开通'
   Write-Host "     ${Bold}OpenAI 官方 GPT 模型$R"
@@ -1138,17 +1142,26 @@ try {
       Fail "没有权限在 $env:USERPROFILE 里新建 .codex 文件夹（Codex 的配置放在这里），自动修复也没成功。重新运行这行命令，弹出确认框时点「是」；还不行的话，把下面的日志发给我们，我们来修。"
     }
   }
+  # The model menu shows only Zhipu models: fetch the catalog (see $ModelCatalogUrl); without it, the menu stays as it is
+  $catalogPath = Join-Path $CodexHome 'humanslive-models.json'
+  $catalogLine = $null
+  try {
+    $catalog = [Text.Encoding]::UTF8.GetString((Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 $ModelCatalogUrl).RawContentStream.ToArray())
+    if (@(($catalog | ConvertFrom-Json).models.slug) -notcontains $Model) { throw "catalog has no $Model" }
+    [IO.File]::WriteAllText($catalogPath, $catalog, $utf8NoBom)
+    $catalogLine = 'model_catalog_json = "' + ($catalogPath -replace '\\', '\\' -replace '"', '\"') + '"'
+  } catch { Log "model catalog skipped: $($_.Exception.Message)" }
   $backupSuffix = '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   $keptLines = @()
   if (Test-Path $configPath) {
     $inTable = $false; $skipTable = $false
     foreach ($line in [IO.File]::ReadAllLines($configPath, $utf8NoBom)) {
       if ($line -match '^\[') { $inTable = $true; $skipTable = ($line.Trim() -eq '[model_providers.zhipu]') }
-      if (-not $inTable -and $line -match '^\s*(model|model_provider)\s*=') { continue }
+      if (-not $inTable -and $line -match '^\s*(model|model_provider|model_catalog_json)\s*=') { continue }
       if (-not $skipTable) { $keptLines += $line }
     }
   }
-  $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"", '') + $keptLines + @(
+  $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"") + @($catalogLine | Where-Object { $_ }) + @('') + $keptLines + @(
     '', '[model_providers.zhipu]', 'name = "智谱 GLM"', "base_url = `"$ZhipuBaseUrl`"", 'wire_api = "responses"', 'requires_openai_auth = true')
   # Codex follows the system language by default; set the Language setting (stored under [desktop]) to the chosen
   # edition on every run: replace any other value in place, so an unchanged config stays byte-identical. Windows' own
@@ -1217,20 +1230,30 @@ try {
   Say '打开 Codex'
   $codexCli = $codex.Cli
   if (Test-Path $codexCli) {
-    # codex waits forever unless stdin is closed; run it as a job with a 120 s limit
-    $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir -ScriptBlock {
-      param($cli, $codexHomeDir, $dir)
-      $env:CODEX_HOME = $codexHomeDir
-      [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex prints UTF-8; without this, Chinese replies are garbled
-      Set-Location $dir
-      cmd /c "`"$cli`" exec --ephemeral --skip-git-repo-check `"只回复两个字：好了`" < NUL 2>NUL"
+    # codex waits forever unless stdin is closed; run it as a job with a 120 s limit. If Codex rejects the model
+    # catalog (it then ignores the whole config), drop the catalog and ask again
+    $errFile = Join-Path $WorkDir 'verify-stderr.txt'
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+      $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir, $errFile -ScriptBlock {
+        param($cli, $codexHomeDir, $dir, $err)
+        $env:CODEX_HOME = $codexHomeDir
+        [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex prints UTF-8; without this, Chinese replies are garbled
+        Set-Location $dir
+        cmd /c "`"$cli`" exec --ephemeral --skip-git-repo-check `"只回复两个字：好了`" < NUL 2>`"$err`""
+      }
+      $since = Get-Date
+      while ($job.State -eq 'Running' -and ((Get-Date) - $since).TotalSeconds -lt 120) { Wait-Tick 0.3 '让 Codex 回一句话' $since }
+      Clear-Line
+      $reply = if ($job.State -ne 'Running') { Receive-Job $job | Select-Object -Last 1 } else { Stop-Job $job; $null }
+      Remove-Job $job -Force -ErrorAction SilentlyContinue
+      Log "verify reply: $reply"
+      if ($reply -or -not $catalogLine -or -not (Select-String -Quiet -Path $errFile -Pattern 'model_catalog_json' -ErrorAction SilentlyContinue)) { break }
+      Log "model catalog rejected: $((Select-String -Path $errFile -Pattern 'model_catalog_json' | Select-Object -First 1).Line)"
+      $configLines = @([IO.File]::ReadAllLines($configPath, $utf8NoBom) | Where-Object { $_ -ne $catalogLine })
+      [IO.File]::WriteAllText($configPath, ($configLines -join "`n") + "`n", $utf8NoBom)
+      Remove-Item -LiteralPath $catalogPath -ErrorAction SilentlyContinue
+      $catalogLine = $null
     }
-    $since = Get-Date
-    while ($job.State -eq 'Running' -and ((Get-Date) - $since).TotalSeconds -lt 120) { Wait-Tick 0.3 '让 Codex 回一句话' $since }
-    Clear-Line
-    $reply = if ($job.State -ne 'Running') { Receive-Job $job | Select-Object -Last 1 } else { Stop-Job $job; $null }
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
-    Log "verify reply: $reply"
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
   }
   $launcher = $null
@@ -1244,7 +1267,7 @@ try {
   if ($Edition -eq 'zh' -and -not $launcher) {
     Write-Host "     $Red$Bold$Cross 汉化没装上$R，这次打开的是英文界面。把这个日志文件发到社群，我们来修：$LogFile"
   }
-  Show-NextSteps $configPath
+  Show-NextSteps
 
   # ---------- Closing banner: other free HumansLive tools ----------
   # Content and layout come from the website (one kind<TAB>a<TAB>b per line); this only colors by kind.
