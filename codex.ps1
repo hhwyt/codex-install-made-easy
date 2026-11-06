@@ -25,7 +25,8 @@ $ZhipuBaseUrl = 'https://open.bigmodel.cn/api/v1'
 $ModelCatalogUrl = 'https://humanslive.ai/codex-models.json'
 $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-$FreeModels = @('glm-4.7-flash', 'glm-4.5-flash')   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
+# glm-4.7-flash's free tier often answers 429 "overloaded", which stalls agent work (many requests in a row); try 4.5 first
+$FreeModels = @('glm-4.5-flash', 'glm-4.7-flash')
 $DebugPort = 9333
 $CacheDir = if ($env:CODEX_SETUP_CACHE_DIR) { $env:CODEX_SETUP_CACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'HumansLive' }
 $WorkDir = Join-Path $env:TEMP ('codex-setup-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))

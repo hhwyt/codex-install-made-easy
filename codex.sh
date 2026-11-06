@@ -17,7 +17,8 @@ OPENAI_TEAM_ID="2DC432GLL2"
 CODEX_BUNDLE_ID="com.openai.codex"
 ZHIPU_BASE_URL="${CODEX_SETUP_ZHIPU_BASE_URL:-https://open.bigmodel.cn/api/v1}"
 ZHIPU_KEY_PATTERN='^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
-FREE_MODELS="glm-4.7-flash glm-4.5-flash"   # Zhipu now routes 4.5-flash to 4.7-flash; try the newer one first
+# glm-4.7-flash's free tier often answers 429 "overloaded", which stalls agent work (many requests in a row); try 4.5 first
+FREE_MODELS="glm-4.5-flash glm-4.7-flash"
 # Codex's model menu lists OpenAI's GPT models (and suggests switching to them) whatever the provider is, and picking one
 # writes it into config.toml; Zhipu has none of them, so every message then fails with "This model isn't available".
 # This catalog (codex-models.json in the repository) replaces that list with Zhipu models only
