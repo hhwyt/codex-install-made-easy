@@ -344,7 +344,8 @@ $CodexZhLauncher = {
 # Whatever goes wrong, Codex still opens, at worst in English: the shortcut opens Codex directly when this script
 # cannot run, every failure here falls back to a plain launch, and if Codex does not render with the patch, it is
 # reopened without it and the patch stays off for that Codex version (disabled-<version>.txt).
-# Codex is never closed for this: if it is already open (from the Start menu, say), it is just brought to the front.
+# Codex is never closed without asking: if it is already open without Chinese (it restarts itself after an update, or
+# was opened from the Start menu), the user is asked whether to restart it in Chinese.
 # -InstallShortcuts: create the shortcuts ("ChatGPT" plus the Chinese for "Chinese edition") on the desktop and in the
 # Start menu, then return.
 param([switch]$InstallShortcuts)
@@ -552,12 +553,18 @@ if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; 
 Set-Content -LiteralPath $LogFile -Value "$(Get-Date -Format s) start" -Encoding UTF8
 
 try {
-  # Codex runs as a single instance and ignores the arguments of a second launch. A Codex opened some other way may be
-  # in the middle of a task, so leave it alone and just bring it to the front; it is Chinese the next time it is
-  # opened from our shortcut
+  # Codex runs as a single instance and ignores the arguments of a second launch, so a Codex opened some other way has
+  # to be restarted to get Chinese. It may be in the middle of a task: ask first, and if the answer is no, just bring it
+  # to the front
   if (Get-CodexProcesses $appDir | Where-Object { $_.Name -eq 'ChatGPT.exe' }) {
-    Log 'codex already open without the patch: bringing it to the front'
-    Open-CodexPlain; exit
+    Add-Type -AssemblyName System.Windows.Forms
+    $owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true }   # Keeps the question in front
+    $answer = [Windows.Forms.MessageBox]::Show($owner, "ChatGPT 现在是英文界面（多半是升级后它自己重启了）。`n`n要重启成中文吗？正在进行的任务会中断。", 'ChatGPT 汉化版', 'YesNo', 'Question')
+    $owner.Dispose()
+    if ($answer -ne 'Yes') { Log 'codex already open without the patch: kept as is, bringing it to the front'; Open-CodexPlain; exit }
+    Log 'codex already open without the patch: restarting it in chinese'
+    foreach ($p in Get-CodexProcesses $appDir) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
+    for ($i = 0; $i -lt 20 -and (Get-CodexProcesses $appDir); $i++) { Start-Sleep -Milliseconds 500 }
   }
   # A free port picked by the system; Chromium binds DevTools to 127.0.0.1 only
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
@@ -627,7 +634,8 @@ function Install-CodexZh {
   $dir = Join-Path $env:LOCALAPPDATA 'HumansLive'
   New-Item -ItemType Directory -Force $dir | Out-Null
   $launcher = Join-Path $dir 'codex-zh.ps1'
-  [IO.File]::WriteAllText($launcher, $CodexZhLauncher.ToString().Trim() + "`r`n", $utf8NoBom)
+  # With a BOM: Windows PowerShell reads a .ps1 without one in the ANSI code page, and the launcher has Chinese text
+  [IO.File]::WriteAllText($launcher, $CodexZhLauncher.ToString().Trim() + "`r`n", [Text.UTF8Encoding]::new($true))
   # Choosing the Chinese edition again means trying the patch again, even if it was turned off for this Codex version
   Remove-Item (Join-Path $dir 'disabled-*.txt') -ErrorAction SilentlyContinue
   # Run it as its own process with -ExecutionPolicy Bypass, like the shortcuts do: Windows forbids running .ps1 files
