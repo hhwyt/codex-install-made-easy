@@ -370,7 +370,8 @@ $shortcuts = $folders | ForEach-Object { Join-Path $_ $shortcutName }
 $oldShortcuts = $folders | ForEach-Object { Join-Path $_ "Codex $chineseEdition.lnk" }   # The name used before
 $light = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).SystemUsesLightTheme -ne 0
 $variant = if ($light) { 'lightunplated' } else { 'unplated' }
-$iconStampValue = "$($package.Version) $variant"
+# "headless" makes shortcuts made before they started through conhost --headless get rewritten once
+$iconStampValue = "$($package.Version) $variant headless"
 $iconStamp = Join-Path $Dir 'shortcut-icon.txt'
 # An .ico holding the package's PNGs as they are (Windows reads PNG icon entries); falls back to the exe's icon
 function Get-ShortcutIcon {
@@ -397,11 +398,14 @@ function Get-ShortcutIcon {
 function Save-Shortcut($path) {
   $temporary = Join-Path $env:TEMP 'humanslive-codex-zh.lnk'
   $link = (New-Object -ComObject WScript.Shell).CreateShortcut($temporary)
-  $link.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  # A headless console host: the launcher stays alive next to Codex, and a plain powershell.exe would sit in the taskbar
+  # as a Windows Terminal window all that time
+  $link.TargetPath = Join-Path $env:SystemRoot 'System32\conhost.exe'
   # If this script cannot run at all (deleted, or blocked by a policy), open Codex directly
   $quotedScript = $PSCommandPath -replace "'", "''"
-  $link.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"try { & '$quotedScript' } catch { Start-Process 'shell:AppsFolder\$appUserModelId' }`""
-  $link.WindowStyle = 7   # Minimized, so no PowerShell window shows up
+  $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $link.Arguments = "--headless `"$powershell`" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"try { & '$quotedScript' } catch { Start-Process 'shell:AppsFolder\$appUserModelId' }`""
+  $link.WindowStyle = 7   # Minimized, in case a console window shows up anyway
   $link.IconLocation = $icon
   $link.Description = 'ChatGPT'
   $link.Save()
@@ -1324,7 +1328,7 @@ try {
   if ($Edition -eq 'zh') { $launcher = try { Install-CodexZh } catch { Log "chinese launcher failed: $($_.Exception.Message)"; $null } }
   else { Remove-CodexZh }
   if (-not $env:CODEX_SETUP_NO_OPEN) {
-    if ($launcher) { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`"" }
+    if ($launcher) { Start-Process conhost.exe -ArgumentList "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcher`"" }
     else { Open-Codex $codex }
   }
   Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"

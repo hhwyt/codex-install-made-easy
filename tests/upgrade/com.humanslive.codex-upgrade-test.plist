@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily on the Mac: archive a new Codex App version and run the upgrade test. Install: see README.md -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.humanslive.codex-upgrade-test</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>-lc</string><string>"$HOME/dev/codex-install-made-easy/tests/upgrade/archive.sh"</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/codex-upgrade-test.log</string>
+  <key>StandardErrorPath</key><string>/tmp/codex-upgrade-test.log</string>
+</dict>
+</plist>
