@@ -6,6 +6,8 @@
   <key>Label</key><string>com.humanslive.codex-upgrade-test</string>
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>-lc</string><string>"$HOME/dev/codex-install-made-easy/tests/upgrade/archive.sh"</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
   <key>StandardOutPath</key><string>/tmp/codex-upgrade-test.log</string>
   <key>StandardErrorPath</key><string>/tmp/codex-upgrade-test.log</string>
