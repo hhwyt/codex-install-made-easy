@@ -547,6 +547,65 @@ function Get-CodexProcesses($appDir) {
 }
 
 
+# Asks whether to restart an English Codex in Chinese; styled like the installer's edition window (white card, ink
+# text, one blue primary button). Closing the window or Esc means no; Enter means yes
+function Ask-RestartInChinese {
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  try { Add-Type -Namespace HumansLive -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop } catch {}
+  try { [void][HumansLive.Dpi]::SetProcessDPIAware() } catch {}
+  $color = { param($hex) [Drawing.ColorTranslator]::FromHtml($hex) }
+  $white = [Drawing.Color]::White
+  $form = New-Object Windows.Forms.Form
+  $form.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96)
+  $form.AutoScaleMode = 'Dpi'
+  $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10)
+  $form.ClientSize = New-Object Drawing.Size(480, 226)
+  $form.Text = 'ChatGPT 汉化版'; $form.BackColor = $white; $form.StartPosition = 'CenterScreen'; $form.TopMost = $true
+  $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.KeyPreview = $true
+  $addLabel = {
+    param($text, $font, $hex, $y, $height)
+    $form.Controls.Add((New-Object Windows.Forms.Label -Property @{
+      Text = $text; Font = $font; ForeColor = (& $color $hex); Location = New-Object Drawing.Point(28, $y); Size = New-Object Drawing.Size(424, $height)
+    }))
+  }
+  & $addLabel 'HUMANSLIVE.AI ▸ CODEX' (New-Object Drawing.Font('Consolas', 9, [Drawing.FontStyle]::Bold)) '#0c8df6' 26 20
+  & $addLabel 'ChatGPT 现在是英文界面' (New-Object Drawing.Font('Microsoft YaHei UI', 15)) '#2e343b' 50 36
+  & $addLabel '多半是升级后它自己重启了。重启一下就是中文，正在进行的任务会中断。' (New-Object Drawing.Font('Microsoft YaHei UI Light', 10)) '#737b85' 90 44
+  $answer = @{ restart = $false }
+  $buttonFont = New-Object Drawing.Font('Microsoft YaHei UI', 11)
+  $x = 28
+  foreach ($option in @(@{ restart = $true; title = '重启成中文'; primary = $true }, @{ restart = $false; title = '先不用'; primary = $false })) {
+    $option.hover = $false
+    $button = New-Object Windows.Forms.Panel -Property @{
+      Tag = $option; BackColor = $white; Cursor = [Windows.Forms.Cursors]::Hand
+      Location = New-Object Drawing.Point($x, 150); Size = New-Object Drawing.Size(204, 48)
+    }
+    $button.Add_Paint({
+      $o = $this.Tag; $g = $_.Graphics; $g.SmoothingMode = 'AntiAlias'
+      $k = $g.DpiX / 96; $r = 10 * $k; $w = $this.Width - 1; $h = $this.Height - 1
+      $path = New-Object Drawing.Drawing2D.GraphicsPath
+      $path.AddArc(0, 0, 2 * $r, 2 * $r, 180, 90); $path.AddArc($w - 2 * $r, 0, 2 * $r, 2 * $r, 270, 90)
+      $path.AddArc($w - 2 * $r, $h - 2 * $r, 2 * $r, 2 * $r, 0, 90); $path.AddArc(0, $h - 2 * $r, 2 * $r, 2 * $r, 90, 90); $path.CloseFigure()
+      if ($o.primary) {
+        $g.FillPath((New-Object Drawing.SolidBrush (& $color $(if ($o.hover) { '#0a77d1' } else { '#0c8df6' }))), $path); $textColor = $white
+      } else {
+        $g.DrawPath((New-Object Drawing.Pen (& $color $(if ($o.hover) { '#2e343b' } else { '#cdd2d8' }))), $path); $textColor = & $color '#2e343b'
+      }
+      [Windows.Forms.TextRenderer]::DrawText($g, $o.title, $buttonFont, $this.ClientRectangle, $textColor, [Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter')
+    })
+    $button.Add_MouseEnter({ $this.Tag.hover = $true; $this.Invalidate() })
+    $button.Add_MouseLeave({ $this.Tag.hover = $false; $this.Invalidate() })
+    $button.Add_Click({ $answer.restart = $this.Tag.restart; $form.Close() })
+    $form.Controls.Add($button)
+    $x += 220
+  }
+  $form.Add_KeyDown({ if ($_.KeyCode -eq 'Enter') { $answer.restart = $true; $form.Close() } elseif ($_.KeyCode -eq 'Escape') { $form.Close() } })
+  $form.Add_Shown({ $form.Activate() })
+  [void]$form.ShowDialog()
+  $form.Dispose()
+  $answer.restart
+}
+
 # Already running from this launcher: just bring Codex to the front
 $mutex = [Threading.Mutex]::new($false, 'Local\HumansLiveCodexZh')
 if (-not $mutex.WaitOne(0)) { Log 'launcher already running: activating codex'; Open-CodexPlain; exit }
@@ -557,11 +616,7 @@ try {
   # to be restarted to get Chinese. It may be in the middle of a task: ask first, and if the answer is no, just bring it
   # to the front
   if (Get-CodexProcesses $appDir | Where-Object { $_.Name -eq 'ChatGPT.exe' }) {
-    Add-Type -AssemblyName System.Windows.Forms
-    $owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true }   # Keeps the question in front
-    $answer = [Windows.Forms.MessageBox]::Show($owner, "ChatGPT 现在是英文界面（多半是升级后它自己重启了）。`n`n要重启成中文吗？正在进行的任务会中断。", 'ChatGPT 汉化版', 'YesNo', 'Question')
-    $owner.Dispose()
-    if ($answer -ne 'Yes') { Log 'codex already open without the patch: kept as is, bringing it to the front'; Open-CodexPlain; exit }
+    if (-not (Ask-RestartInChinese)) { Log 'codex already open without the patch: kept as is, bringing it to the front'; Open-CodexPlain; exit }
     Log 'codex already open without the patch: restarting it in chinese'
     foreach ($p in Get-CodexProcesses $appDir) { taskkill.exe /F /T /PID $p.ProcessId 2>&1 | Out-Null }
     for ($i = 0; $i -lt 20 -and (Get-CodexProcesses $appDir); $i++) { Start-Sleep -Milliseconds 500 }
