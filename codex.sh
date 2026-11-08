@@ -324,9 +324,15 @@ version_ge() {
 # Writes source, file and size to $WORK_DIR/dl.info; the result (0 = success) goes to $WORK_DIR/dl.rc.
 download_codex_dmg() {
   local url=$1 name=$2 file=$3 headers total etag size
-  headers=$(curl -sIL --connect-timeout 15 --max-time 20 "$url" 2>/dev/null | tr -d '\r')
-  total=$(awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }' <<< "$headers")
-  etag=$(awk 'tolower($1) == "etag:" { e = $2 } END { print e }' <<< "$headers")
+  # Ask for the first byte with GET, not HEAD: the domestic mirror can redirect to a presigned link that is signed for
+  # GET only, so HEAD gets 403 and a 394-byte error page, which was taken for the size. Only the last response counts:
+  # 206 has the size in Content-Range, 200 means the server ignored the range
+  headers=$(curl -sL -r 0-0 -D - -o /dev/null --connect-timeout 15 --max-time 20 "$url" 2>/dev/null | tr -d '\r')
+  total=$(awk 'toupper($1) ~ /^HTTP\// { s = $2; r = 0; l = 0 }
+    tolower($1) == "content-range:" { split($3, p, "/"); r = p[2] + 0 }
+    tolower($1) == "content-length:" { l = $2 + 0 }
+    END { print (s == 206 ? r : s == 200 ? l : 0) }' <<< "$headers")
+  etag=$(awk 'toupper($1) ~ /^HTTP\// { e = "" } tolower($1) == "etag:" { e = $2 } END { print e }' <<< "$headers")
   # A partial file from an older release cannot be resumed; delete it and start over
   if [ -f "$file.etag" ] && [ "$(cat "$file.etag")" != "$etag" ]; then rm -f "$file"; fi
   printf '%s' "$etag" > "$file.etag"

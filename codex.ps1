@@ -220,12 +220,18 @@ function Start-DownloadProcess {
   Log "download try $($d.Tries): $($d.Url)"
 }
 function Start-Download($url, $name, $file) {
-  $headers = (& curl.exe -sIL --connect-timeout 15 --max-time 20 $url 2>$null) -join "`n"
-  $total = 0; $etag = ''
+  # Ask for the first byte with GET, not HEAD: the domestic mirror can redirect to a presigned link that is signed for
+  # GET only, so HEAD gets 403 and a 394-byte error page, which was taken for the size (progress stuck at 100%, and a
+  # partial file was deleted instead of resumed). Only the last response counts: 206 has the size in Content-Range
+  $headers = (& curl.exe -sL -r 0-0 -D - -o NUL --connect-timeout 15 --max-time 20 $url 2>$null) -join "`n"
+  $total = 0; $etag = ''; $status = ''; $length = 0
   foreach ($line in ($headers -split "`n")) {
-    if ($line -match '^(?i)content-length:\s*(\d+)') { $total = [long]$Matches[1] }
+    if ($line -match '^HTTP/\S+\s+(\d+)') { $status = $Matches[1]; $total = 0; $length = 0; $etag = '' }
+    if ($line -match '^(?i)content-range:\s*bytes\s+\d+-\d+/(\d+)') { $total = [long]$Matches[1] }
+    if ($line -match '^(?i)content-length:\s*(\d+)') { $length = [long]$Matches[1] }
     if ($line -match '^(?i)etag:\s*(\S+)') { $etag = $Matches[1] }
   }
+  if ($status -eq '200') { $total = $length } elseif ($status -ne '206') { $total = 0 }   # 200: the server ignored the range
   # A partial file from an older release cannot be resumed; delete it and start over
   if ((Test-Path "$file.etag") -and ((Get-Content "$file.etag" -Raw) -ne $etag)) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
   Set-Content "$file.etag" $etag -NoNewline
