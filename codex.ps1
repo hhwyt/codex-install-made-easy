@@ -1092,6 +1092,14 @@ function Get-ZhipuKeyWithBrowser($browser) {
 }
 
 
+# Read a file another process may still hold open for writing (Codex's background git fetch keeps its output files open)
+function Read-SharedText($path) {
+  try {
+    $stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+    try { [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
+  } catch { '' }
+}
+
 # Try each free Zhipu model with this key and return the first that works; the last HTTP status is left in $Script:LastStatus
 function Find-FreeModel($key) {
   foreach ($candidate in $FreeModels) {
@@ -1372,11 +1380,12 @@ try {
       $since = Get-Date
       while (-not $verify.HasExited -and ((Get-Date) - $since).TotalSeconds -lt 120) { Wait-Tick 0.3 '让 Codex 回一句话' $since }
       Clear-Line
-      $reply = if ($verify.HasExited) { @([IO.File]::ReadAllLines($outFile, [Text.Encoding]::UTF8) | Where-Object { $_.Trim() }) | Select-Object -Last 1 }
+      $reply = if ($verify.HasExited) { @((Read-SharedText $outFile) -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -Last 1 }
                else { taskkill.exe /F /T /PID $verify.Id 2>&1 | Out-Null; $null }
       Log "verify reply: $reply"
-      if ($reply -or -not $catalogLine -or -not (Select-String -Quiet -Path $errFile -Pattern 'model_catalog_json' -ErrorAction SilentlyContinue)) { break }
-      Log "model catalog rejected: $((Select-String -Path $errFile -Pattern 'model_catalog_json' | Select-Object -First 1).Line)"
+      $catalogError = (Read-SharedText $errFile) -split "`r?`n" | Where-Object { $_ -match 'model_catalog_json' } | Select-Object -First 1
+      if ($reply -or -not $catalogLine -or -not $catalogError) { break }
+      Log "model catalog rejected: $catalogError"
       Step fix start '正在帮你修：这个版本的 Codex 不认模型菜单文件，改用默认菜单'
       $configLines = @([IO.File]::ReadAllLines($configPath, $utf8NoBom) | Where-Object { $_ -ne $catalogLine })
       [IO.File]::WriteAllText($configPath, ($configLines -join "`n") + "`n", $utf8NoBom)
