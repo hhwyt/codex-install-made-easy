@@ -27,7 +27,9 @@ $ZhipuLoginUrl = 'https://bigmodel.cn/login?redirect=%2Fapikey%2Fplatform'
 $ZhipuKeyPattern = '^[0-9a-f]{32}\.[A-Za-z0-9]{16}$'
 # glm-4.7-flash's free tier often answers 429 "overloaded", which stalls agent work (many requests in a row); try 4.5 first
 $FreeModels = @('glm-4.5-flash', 'glm-4.7-flash')
-$DebugPort = 9333
+# CODEX_SETUP_LOGIN_PORT: an app already shows the Zhipu login page with a DevTools port, so connect to that page
+# instead of opening a browser window
+$DebugPort = if ($env:CODEX_SETUP_LOGIN_PORT) { [int]$env:CODEX_SETUP_LOGIN_PORT } else { 9333 }
 $CacheDir = if ($env:CODEX_SETUP_CACHE_DIR) { $env:CODEX_SETUP_CACHE_DIR } else { Join-Path $env:LOCALAPPDATA 'HumansLive' }
 $WorkDir = Join-Path $env:TEMP ('codex-setup-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
@@ -36,6 +38,17 @@ New-Item -ItemType Directory -Force $WorkDir | Out-Null
 $LogFile = Join-Path $CacheDir ('logs\codex-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
 New-Item -ItemType Directory -Force (Split-Path $LogFile) | Out-Null
 function Log($text) { try { Add-Content -LiteralPath $LogFile -Value ((Get-Date -Format 'HH:mm:ss.fff') + '  ' + $text) -Encoding UTF8 } catch { } }
+# CODEX_SETUP_STEPS=1: also print one machine-readable line per step, STEP:<id>:<start|done|fail>:<text>, for an app
+# that runs this script in the background. ids: check, install, scan, key, config, test, fix, edition, all. A repeated
+# start updates the text. Off by default, and then nothing here changes what the script prints or does
+$StepOutput = $env:CODEX_SETUP_STEPS -eq '1'
+$Script:CurrentStep = 'check'
+function Step($id, $state, $text) {
+  if ($state -eq 'start' -and $id -ne 'fix') { $Script:CurrentStep = $id }
+  if (-not $StepOutput) { return }
+  Log "STEP:${id}:${state}:$text"
+  [Console]::Out.WriteLine("STEP:${id}:${state}:$text"); [Console]::Out.Flush()
+}
 
 # ---------- Terminal output ----------
 # One accent color (blue), gray for secondary text, red only for errors. ANSI terminals get the same animations and
@@ -151,7 +164,7 @@ function Show-Error($text) {
   Write-Host "     ${Dim}日志：$LogFile$R"
   Write-Host "     ${Dim}需要帮助：把这个日志文件发到社群 https://humanslive.ai/community$R"
   Write-Host ''
-  Start-Process explorer.exe "/select,`"$LogFile`"" -ErrorAction SilentlyContinue
+  if (-not $StepOutput) { Start-Process explorer.exe "/select,`"$LogFile`"" -ErrorAction SilentlyContinue }   # The app offers to copy the log instead
 }
 # After the key is created, tell the user where it lives and who can see it
 function Show-KeyNote {
@@ -176,6 +189,7 @@ function Show-NextSteps {
 }
 function Fail($text) {
   Log "FAIL $text"
+  Step $Script:CurrentStep 'fail' $text
   Show-Error $text
   throw 'HL_FAIL'   # The outer catch recognizes this and skips PowerShell's red error dump
 }
@@ -242,6 +256,7 @@ function Stop-Download { if ($Script:Dl -and $Script:Dl.Proc -and -not $Script:D
 # Draw the progress bar in the foreground until the background download ends
 function Show-DownloadProgress {
   $d = $Script:Dl
+  $Script:StepTick = [datetime]::MinValue
   $windowStart = Get-Date; $windowBytes = Get-DownloadedBytes; $speed = 0
   while (-not $d.Done -and -not $d.Failed) {
     Update-Download
@@ -256,6 +271,9 @@ function Show-DownloadProgress {
         $fill = [int]($pct * $width / 100)
         W "`r$E[K     $Blue$($BarOn * $fill)$R$Dim$($BarOff * ($width - $fill))$R  $stats"
       } else { W "`r$E[K     $stats" }
+    }
+    if ($StepOutput -and $d.Total -gt 0 -and ((Get-Date) - $Script:StepTick).TotalSeconds -ge 1) {
+      Step install start "下载 Codex $([Math]::Min(100, [int]($size * 100 / $d.Total)))%"; $Script:StepTick = Get-Date
     }
     Start-Sleep -Milliseconds 250
   }
@@ -821,11 +839,13 @@ while (-not (Test-Path `$go)) { if (-not (Get-Process -Id $PID -ErrorAction Sile
   Section '安装授权' '只用来装 Codex'
   Todo '马上会弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
   Info 'Codex 带一个安全沙盒组件，Windows 规定装它要你确认一次'
+  Step install start '弹出「你要允许此应用对你的设备进行更改吗？」时点「是」，只用来装 Codex'
   try {
     $Script:Helper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
     $null = $Script:Helper.Handle
     Log "install helper started pid=$($Script:Helper.Id)"
     Ok '已确认，Codex 下载完会自动安装'
+    Step install start '正在后台下载 Codex'
   } catch {
     Log "install helper declined: $($_.Exception.Message)"
     Fail '没有点「是」，Codex 装不上。重新运行这行命令，弹出确认框时点「是」就行（已经下载的部分会接着下）。'
@@ -847,6 +867,7 @@ function Install-FromMsix($file) {
     $sig = Get-AuthenticodeSignature $f
     "$($manifest.Package.Identity.Name)|$($manifest.Package.Identity.Publisher)|$($sig.Status)|$($manifest.Package.Identity.Version)"
   }
+  Step install start '核对安装包是不是 OpenAI 官方原版'
   while ($job.State -eq 'Running') { Wait-Tick 0.3 '核对安装包的签名和发布者' $Script:Started }
   Clear-Line
   $check = Receive-Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
@@ -859,6 +880,7 @@ function Install-FromMsix($file) {
     return $false
   }
   Ok "已确认是 OpenAI 官方原版 $version（微软商店签名）"
+  Step install start '安装 Codex'
   $since = Get-Date
   if (Test-Elevated) {
     $job = Start-Job -ArgumentList $file -ScriptBlock { param($f) try { Add-AppxPackage -Path $f -ErrorAction Stop; 'OK' } catch { "ERROR:$($_.Exception.Message)" } }
@@ -886,6 +908,7 @@ function Install-FromStore {
     Fail '没能自动安装 Codex。已为你打开微软商店的 Codex 页面：点「获取」装好后，重新运行这行命令。'
   }
   Info '从微软商店安装（会自动同意商店条款）'
+  Step install start '从微软商店安装 Codex，弹出确认框时点「是」'
   Todo '会再弹一次「你要允许此应用对你的设备进行更改吗？」，点「是」'
   $winget = Start-Process winget -PassThru -WindowStyle Hidden -ArgumentList "install --id $CodexStoreId --source msstore --accept-package-agreements --accept-source-agreements --disable-interactivity"
   $since = Get-Date
@@ -983,6 +1006,7 @@ $CreateKeyScript = @'
 '@
 
 function Get-ZhipuKeyAutomatically {
+  if ($env:CODEX_SETUP_LOGIN_PORT) { return Get-ZhipuKeyWithBrowser $null }   # The app shows the login page itself
   $browsers = @(Find-LoginBrowsers)
   if (-not $browsers) { Install-Edge; $browsers = @(Find-LoginBrowsers) }
   if (-not $browsers) { return 'ERROR:没有找到 Edge 浏览器，自动安装也没成功' }
@@ -1009,9 +1033,11 @@ function Get-LoginWindowProblem($browser, $process, $lastError) {
 
 function Get-ZhipuKeyWithBrowser($browser) {
   $profileDir = Join-Path $WorkDir $(if ($browser -like '*chrome.exe') { 'chrome-profile' } else { 'edge-profile' })
-  $edgeProcess = Start-Process -FilePath $browser -PassThru -ArgumentList @(
-    "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
-    "--app=$ZhipuLoginUrl", '--window-size=1100,800')
+  $edgeProcess = if ($browser) {
+    Start-Process -FilePath $browser -PassThru -ArgumentList @(
+      "--remote-debugging-port=$DebugPort", "--user-data-dir=`"$profileDir`"", '--no-first-run', '--no-default-browser-check', '--lang=zh-CN', '--disable-features=Translate',
+      "--app=$ZhipuLoginUrl", '--window-size=1100,800')
+  }
   try {
     # Reloads and navigations drop the DevTools connection, so reconnect on every error; give up only when the window is closed
     $connectToPage = {
@@ -1092,6 +1118,16 @@ function Find-FreeModel($key) {
 }
 
 # ================= Main =================
+# CODEX_SETUP_ACTION=edition: only switch the edition (CODEX_SETUP_EDITION=zh adds the Chinese launcher and shortcuts,
+# en removes them), for an app that manages an installed Codex
+if ($env:CODEX_SETUP_ACTION -eq 'edition') {
+  $Edition = if ($env:CODEX_SETUP_EDITION -eq 'en') { 'en' } else { 'zh' }
+  Log "edition only: $Edition"
+  try {
+    if ($Edition -eq 'zh') { $null = Install-CodexZh; Step edition done '汉化版' } else { Remove-CodexZh; Step edition done '英文原版' }
+    exit 0
+  } catch { Log "edition failed: $($_.Exception.Message)"; Step edition fail '汉化没装上'; exit 1 }
+}
 $Steps = 3
 try {
   Header 'CODEX INSTALLER' 'Codex 一键安装 · 国产模型版 · 不用科学上网 · 不花一分钱'
@@ -1102,6 +1138,7 @@ try {
 
   # ---------- Preparation: system check, source race, then start the background download ----------
   Section '系统检测' ''
+  Step check start '检测电脑'
   $os = Get-CimInstance Win32_OperatingSystem
   Log "os=$($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE ps=$($PSVersionTable.PSVersion) console=$ConsoleClass fancy=$Fancy live=$Live"
   Log "user=$env:USERNAME locale=$((Get-Culture).Name) proxy=$([bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY)) browsers=$(Find-LoginBrowsers)"
@@ -1111,6 +1148,7 @@ try {
   if ($codex) {
     Log "codex already installed: $($codex.Version)"
     Ok '已经装过 Codex，这次不用下载'
+    Step install done "已经装过 Codex $($codex.Version)"
   } else {
     $freeGb = [int]((Get-PSDrive ($env:LOCALAPPDATA.Substring(0, 1))).Free / 1GB)
     if ($freeGb -lt 4) { Fail "硬盘空间不够：装 Codex 需要约 4GB，现在只剩 ${freeGb}GB。清理一些文件后，重新运行这行命令。" }
@@ -1120,11 +1158,13 @@ try {
       Fail '这台电脑现在登录的账号不是管理员。Codex 带一个系统组件，Windows 规定要管理员账号才能装。换管理员账号登录后，重新运行这行命令。'
     }
     $source = Select-Source
-    if ($source) { Start-Download $source.Url $source.Name $source.File; Start-InstallHelper }
+    if ($source) { Step install start '正在后台下载 Codex'; Start-Download $source.Url $source.Name $source.File; Start-InstallHelper }
   }
+  Step check done "$($os.Caption -replace 'Microsoft ', '')"
 
   # ---------- [1/3] Zhipu account (the only step that needs the user) ----------
   Say '登录智谱'
+  Step key start '获取免费 Key'
   $configPath = Join-Path $CodexHome 'config.toml'
   $authPath = Join-Path $CodexHome 'auth.json'
   $utf8NoBom = [Text.UTF8Encoding]::new($false)
@@ -1137,6 +1177,8 @@ try {
   if (-not $env:CODEX_SETUP_ZHIPU_KEY -and $oldKey -match $ZhipuKeyPattern -and ($Model = Find-FreeModel $oldKey)) {
     $ZhipuApiKey = $oldKey
     Ok '之前已经登录过智谱，Key 还能用，这次不用扫码'
+    Step key done '之前登录过智谱，Key 还能用'
+    Step config start '配置模型'
   } else {
     if ($env:CODEX_SETUP_ZHIPU_KEY) {
       $ZhipuApiKey = $env:CODEX_SETUP_ZHIPU_KEY
@@ -1145,12 +1187,14 @@ try {
       Todo '在弹出的智谱窗口里，用手机微信扫码登录'
       Info '第一次用智谱的话，扫码后还要填手机号、收一次验证码'
       if ($Script:Dl) { Info 'Codex 同时在后台下载，不用等' }
+      Step scan start '用微信扫码登录智谱'
       $outcome = Get-ZhipuKeyAutomatically
       Clear-Line
       if ($outcome -match $ZhipuKeyPattern) {
         Log 'login outcome: key created'
         $ZhipuApiKey = $outcome
         Ok '已登录，自动创建好 API Key'
+        Step scan done '已登录智谱'
         Show-KeyNote
       } else {
         # No manual copy-the-key fallback: reading the clipboard gets the script flagged by Windows Defender as a
@@ -1170,6 +1214,8 @@ try {
       }
     }
     if ($ZhipuApiKey -notmatch $ZhipuKeyPattern) { Fail 'API Key 格式不对。' }
+    Step key done '已用你的智谱账号建好 Key'
+    Step config start '测试智谱免费模型'
     $Model = Find-FreeModel $ZhipuApiKey
     if (-not $Model) { Fail "智谱免费模型暂时不可用（HTTP $Script:LastStatus），请稍后重新运行这行命令。" }
   }
@@ -1199,14 +1245,17 @@ try {
     # (inherited by new subfolders), which needs one elevation prompt, then try again
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Todo '马上会弹出「你要允许此应用对你的设备进行更改吗？」，点「是」'
+    Step fix start '正在帮你修：用户文件夹缺了写入权限，弹出确认框时点「是」'
     Info "你的用户文件夹 $env:USERPROFILE 缺了你自己的写入权限，Codex 的配置写不进去，确认后帮你补上"
     try {
       $fix = Start-Process icacls.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList "`"$env:USERPROFILE`" /grant *$($sid):(OI)(CI)F"
       Log "icacls grant exit=$($fix.ExitCode)"
       New-Item -ItemType Directory -Force $CodexHome -ErrorAction Stop | Out-Null
       Ok '已补上权限'
+      Step fix done '已补上用户文件夹的写入权限'
     } catch {
       Log "permission fix failed: $($_.Exception.Message)"
+      Step fix fail '用户文件夹的权限没能补上'
       Fail "没有权限在 $env:USERPROFILE 里新建 .codex 文件夹（Codex 的配置放在这里），自动修复也没成功。重新运行这行命令，弹出确认框时点「是」；还不行的话，把下面的日志发给我们，我们来修。"
     }
   }
@@ -1228,6 +1277,10 @@ try {
       if (-not $inTable -and $line -match '^\s*(model|model_provider|model_catalog_json)\s*=') { continue }
       if (-not $skipTable) { $keptLines += $line }
     }
+    # Blank lines at the start and end are dropped (the parts this script adds bring their own), so a rerun writes the
+    # same bytes instead of two more blank lines each time
+    while ($keptLines.Count -and -not $keptLines[0].Trim()) { $keptLines = @($keptLines | Select-Object -Skip 1) }
+    while ($keptLines.Count -and -not $keptLines[-1].Trim()) { $keptLines = @($keptLines | Select-Object -First ($keptLines.Count - 1)) }
   }
   $configLines = @("model_provider = `"zhipu`"", "model = `"$Model`"") + @($catalogLine | Where-Object { $_ }) + @('') + $keptLines + @(
     '', '[model_providers.zhipu]', 'name = "智谱 GLM"', "base_url = `"$ZhipuBaseUrl`"", 'wire_api = "responses"', 'requires_openai_auth = true')
@@ -1258,11 +1311,13 @@ try {
   }
   Log "config written: $configPath"
   Ok '已把 Key 和模型写进 Codex 的配置'
+  Step config done "已配置智谱免费模型 $Model"
   if ($backedUp) { Info "原来的配置已备份为 *$backupSuffix" }
 
 
   # ---------- [2/3] Install Codex ----------
   Say '安装 Codex'
+  if (-not $codex) { Step install start '安装 Codex' }
   if ($codex) {
     Ok "已经装过 Codex $($codex.Version)，跳过"
   } else {
@@ -1292,37 +1347,45 @@ try {
     }
     Log "codex installed: $($codex.Version) service=$((Get-Service "CodexSandboxService.$($codex.Package.PackageFamilyName -replace '_[^_]+$', '')" -ErrorAction SilentlyContinue).Status)"
     Ok "Codex $($codex.Version) 已装好"
+    Step install done "Codex $($codex.Version) 已装好"
   }
 
   # ---------- [3/3] Smoke test, then open ----------
   Say '打开 Codex'
+  Step test start '让 Codex 回一句话'
   $codexCli = $codex.Cli
   if (Test-Path $codexCli) {
-    # codex waits forever unless stdin is closed; run it as a job with a 120 s limit. If Codex rejects the model
-    # catalog (it then ignores the whole config), drop the catalog and ask again
+    # codex waits forever unless stdin is closed: give it an empty file, and give up after 120 s. Its output goes to files,
+    # not a pipe: Codex starts a background git fetch of OpenAI's plugin list that inherits its handles and can run for
+    # minutes (GitHub is slow or blocked in China), and waiting for a pipe to close would wait for that git too. If
+    # Codex rejects the model catalog (it then ignores the whole config), drop the catalog and ask again
     $errFile = Join-Path $WorkDir 'verify-stderr.txt'
+    $outFile = Join-Path $WorkDir 'verify.txt'
+    $inFile = Join-Path $WorkDir 'verify-stdin.txt'
+    [IO.File]::WriteAllText($inFile, '')
     for ($attempt = 1; $attempt -le 2; $attempt++) {
-      $job = Start-Job -ArgumentList $codexCli, $CodexHome, $WorkDir, $errFile -ScriptBlock {
-        param($cli, $codexHomeDir, $dir, $err)
-        $env:CODEX_HOME = $codexHomeDir
-        [Console]::OutputEncoding = [Text.UTF8Encoding]::new()   # codex prints UTF-8; without this, Chinese replies are garbled
-        Set-Location $dir
-        cmd /c "`"$cli`" exec --ephemeral --skip-git-repo-check `"只回复两个字：好了`" < NUL 2>`"$err`""
-      }
+      $oldCodexHome = $env:CODEX_HOME; $env:CODEX_HOME = $CodexHome
+      try {
+        $verify = Start-Process -FilePath $codexCli -ArgumentList 'exec', '--ephemeral', '--skip-git-repo-check', '"只回复两个字：好了"' -WorkingDirectory $WorkDir `
+          -NoNewWindow -PassThru -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+      } finally { $env:CODEX_HOME = $oldCodexHome }
       $since = Get-Date
-      while ($job.State -eq 'Running' -and ((Get-Date) - $since).TotalSeconds -lt 120) { Wait-Tick 0.3 '让 Codex 回一句话' $since }
+      while (-not $verify.HasExited -and ((Get-Date) - $since).TotalSeconds -lt 120) { Wait-Tick 0.3 '让 Codex 回一句话' $since }
       Clear-Line
-      $reply = if ($job.State -ne 'Running') { Receive-Job $job | Select-Object -Last 1 } else { Stop-Job $job; $null }
-      Remove-Job $job -Force -ErrorAction SilentlyContinue
+      $reply = if ($verify.HasExited) { @([IO.File]::ReadAllLines($outFile, [Text.Encoding]::UTF8) | Where-Object { $_.Trim() }) | Select-Object -Last 1 }
+               else { taskkill.exe /F /T /PID $verify.Id 2>&1 | Out-Null; $null }
       Log "verify reply: $reply"
       if ($reply -or -not $catalogLine -or -not (Select-String -Quiet -Path $errFile -Pattern 'model_catalog_json' -ErrorAction SilentlyContinue)) { break }
       Log "model catalog rejected: $((Select-String -Path $errFile -Pattern 'model_catalog_json' | Select-Object -First 1).Line)"
+      Step fix start '正在帮你修：这个版本的 Codex 不认模型菜单文件，改用默认菜单'
       $configLines = @([IO.File]::ReadAllLines($configPath, $utf8NoBom) | Where-Object { $_ -ne $catalogLine })
       [IO.File]::WriteAllText($configPath, ($configLines -join "`n") + "`n", $utf8NoBom)
       Remove-Item -LiteralPath $catalogPath -ErrorAction SilentlyContinue
       $catalogLine = $null
+      Step fix done '已改用默认模型菜单'
     }
     if ($reply) { Ok "Codex 回复：$reply" } else { Info 'Codex 没有回复，打开后可以直接试用' }
+    Step test done $(if ($reply) { "Codex 回复：$reply" } else { 'Codex 没有回复，打开后可以直接试用' })
   }
   $launcher = $null
   if ($Edition -eq 'zh') { $launcher = try { Install-CodexZh } catch { Log "chinese launcher failed: $($_.Exception.Message)"; $null } }
@@ -1332,6 +1395,8 @@ try {
     else { Open-Codex $codex }
   }
   Finish "Codex 已经打开，用的是智谱免费模型 $Bold$Model$R"
+  if ($Edition -eq 'zh') { if ($launcher) { Step edition done '汉化版' } else { Step edition fail '汉化没装上，这次是英文界面' } } else { Step edition done '英文原版' }
+  Step all done $Model
   if ($Edition -eq 'zh' -and -not $launcher) {
     Write-Host "     $Red$Bold$Cross 汉化没装上$R，这次打开的是英文界面。把这个日志文件发到社群，我们来修：$LogFile"
   }
@@ -1364,6 +1429,7 @@ try {
   if ("$_" -ne 'HL_FAIL') {
     Log "EXCEPTION $($_.Exception.GetType().FullName): $($_.Exception.Message)"
     Log "AT $($_.InvocationInfo.PositionMessage -replace "`r?`n", ' | ')"
+    Step $Script:CurrentStep 'fail' "安装中途出了意外：$($_.Exception.Message)"
     Show-Error "安装中途出了意外：$($_.Exception.Message)"
   }
 } finally {
